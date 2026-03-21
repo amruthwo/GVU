@@ -102,6 +102,9 @@ if [ -z "$cover_url" ]; then
                | grep '"original"' \
                | head -1 \
                | sed 's/.*"original":"\([^"]*\)".*/\1/' || true)
+        # TVMaze image URLs in the JSON are https:// — downgrade to http://
+        # since wget on SpruceOS has no TLS support.
+        orig=$(echo "$orig" | sed 's|^https://|http://|')
         if [ -n "$orig" ] && [ "$orig" != "null" ]; then
             cover_url="$orig"
             echo "TVMaze: found image"
