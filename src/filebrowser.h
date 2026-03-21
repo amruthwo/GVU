@@ -10,13 +10,32 @@ typedef struct {
     char *name;   /* basename only, for display */
 } VideoFile;
 
+/* A season sub-directory inside a show container */
 typedef struct {
-    char      *path;         /* full absolute path to the folder */
-    char      *name;         /* folder basename, for display */
-    char      *cover;        /* cover.jpg/png path, or NULL if none */
+    char      *path;
+    char      *name;        /* e.g. "Season 1" */
+    char      *cover;       /* cover.jpg/png, or NULL */
     VideoFile *files;
     int        file_count;
     int        file_cap;
+} Season;
+
+typedef struct {
+    char      *path;
+    char      *name;
+    char      *cover;
+
+    /* is_show == 0: flat folder (files/file_count/file_cap used) */
+    /* is_show == 1: show container (seasons/season_count/season_cap used) */
+    int        is_show;
+
+    VideoFile *files;
+    int        file_count;
+    int        file_cap;
+
+    Season    *seasons;
+    int        season_count;
+    int        season_cap;
 } MediaFolder;
 
 typedef struct {

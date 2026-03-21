@@ -51,18 +51,39 @@ static void navigate_to_file(BrowserState *state, const MediaLibrary *lib,
     if (slash) *slash = '\0';
 
     for (int fi = 0; fi < lib->folder_count; fi++) {
-        if (strcmp(lib->folders[fi].path, dir) == 0) {
-            state->folder_idx = fi;
-            state->view       = VIEW_FILES;
-            state->scroll_row = 0;
-            state->selected   = 0;
-            for (int i = 0; i < lib->folders[fi].file_count; i++) {
-                if (strcmp(lib->folders[fi].files[i].path, file_path) == 0) {
-                    state->selected = i;
-                    break;
+        const MediaFolder *mf = &lib->folders[fi];
+        if (!mf->is_show) {
+            if (strcmp(mf->path, dir) == 0) {
+                state->folder_idx = fi;
+                state->season_idx = 0;
+                state->view       = VIEW_FILES;
+                state->scroll_row = 0;
+                state->selected   = 0;
+                for (int i = 0; i < mf->file_count; i++) {
+                    if (strcmp(mf->files[i].path, file_path) == 0) {
+                        state->selected = i;
+                        break;
+                    }
+                }
+                return;
+            }
+        } else {
+            for (int si = 0; si < mf->season_count; si++) {
+                if (strcmp(mf->seasons[si].path, dir) == 0) {
+                    state->folder_idx = fi;
+                    state->season_idx = si;
+                    state->view       = VIEW_FILES;
+                    state->scroll_row = 0;
+                    state->selected   = 0;
+                    for (int i = 0; i < mf->seasons[si].file_count; i++) {
+                        if (strcmp(mf->seasons[si].files[i].path, file_path) == 0) {
+                            state->selected = i;
+                            break;
+                        }
+                    }
+                    return;
                 }
             }
-            return;
         }
     }
     state->view = VIEW_FOLDERS;
@@ -76,15 +97,16 @@ static void navigate_to_file(BrowserState *state, const MediaLibrary *lib,
 
 static int do_play(Player *player, const char *path, SDL_Renderer *renderer,
                    BrowserState *state, const MediaLibrary *lib,
-                   int *play_folder_idx, int *play_file_idx,
+                   int *play_folder_idx, int *play_file_idx, int *play_season_idx,
                    Uint32 *last_resume_save,
                    char *errbuf, int errsz) {
     if (player_open(player, path, renderer, errbuf, errsz) != 0)
         return -1;
     player_play(player);
     navigate_to_file(state, lib, path);
-    *play_folder_idx = state->folder_idx;
-    *play_file_idx   = state->selected;
+    *play_folder_idx  = state->folder_idx;
+    *play_file_idx    = state->selected;
+    *play_season_idx  = state->season_idx;
     *last_resume_save = SDL_GetTicks();
     return 0;
 }
@@ -199,6 +221,7 @@ int main(int argc, char *argv[]) {
     Uint32   last_resume_save = 0;
     int      play_folder_idx  = 0;
     int      play_file_idx    = 0;
+    int      play_season_idx  = -1;
 #ifdef GVU_A30
     /* Sleep/wake detection: track SDL_GetTicks gap between frames.
        A gap > 2s while playing means the device woke from sleep. */
@@ -341,6 +364,7 @@ int main(int argc, char *argv[]) {
                                     player.probe.duration_sec);
                         player_close(&player);
                         state.prog_folder_idx = -1;
+                        state.prog_season_idx = -1;
                         mode = MODE_BROWSER;
                     }
                 }
@@ -441,7 +465,7 @@ int main(int argc, char *argv[]) {
                         char errbuf[256] = {0};
                         if (do_play(&player, state.action_path, renderer,
                                     &state, &lib,
-                                    &play_folder_idx, &play_file_idx,
+                                    &play_folder_idx, &play_file_idx, &play_season_idx,
                                     &last_resume_save,
                                     errbuf, sizeof(errbuf)) != 0) {
                             strncpy(error_path, state.action_path,
@@ -486,7 +510,7 @@ int main(int argc, char *argv[]) {
                         char errbuf[256] = {0};
                         if (do_play(&player, history.action_path, renderer,
                                     &state, &lib,
-                                    &play_folder_idx, &play_file_idx,
+                                    &play_folder_idx, &play_file_idx, &play_season_idx,
                                     &last_resume_save,
                                     errbuf, sizeof(errbuf)) != 0) {
                             strncpy(error_path, history.action_path,
@@ -509,7 +533,7 @@ int main(int argc, char *argv[]) {
                         /* A — resume from saved position */
                         if (do_play(&player, resume_path, renderer,
                                     &state, &lib,
-                                    &play_folder_idx, &play_file_idx,
+                                    &play_folder_idx, &play_file_idx, &play_season_idx,
                                     &last_resume_save,
                                     errbuf, sizeof(errbuf)) != 0) {
                             strncpy(error_path, resume_path,
@@ -526,7 +550,7 @@ int main(int argc, char *argv[]) {
                         /* X — start from beginning */
                         if (do_play(&player, resume_path, renderer,
                                     &state, &lib,
-                                    &play_folder_idx, &play_file_idx,
+                                    &play_folder_idx, &play_file_idx, &play_season_idx,
                                     &last_resume_save,
                                     errbuf, sizeof(errbuf)) != 0) {
                             strncpy(error_path, resume_path,
@@ -550,7 +574,7 @@ int main(int argc, char *argv[]) {
                         char errbuf[256] = {0};
                         if (do_play(&player, upnext_path, renderer,
                                     &state, &lib,
-                                    &play_folder_idx, &play_file_idx,
+                                    &play_folder_idx, &play_file_idx, &play_season_idx,
                                     &last_resume_save,
                                     errbuf, sizeof(errbuf)) != 0) {
                             strncpy(error_path, upnext_path,
@@ -592,10 +616,21 @@ int main(int argc, char *argv[]) {
                         case SDLK_RCTRL:
                         case SDLK_m:
                             player_toggle_mute(&player); break;
-                        /* L2 / R2 — skip to prev / next file in folder */
+                        /* L2 / R2 — skip to prev / next file in folder/season */
                         case SDLK_COMMA: {
+                            const MediaFolder *fol = &lib.folders[play_folder_idx];
+                            const VideoFile *files;
+                            int file_count;
+                            if (fol->is_show && play_season_idx >= 0 &&
+                                    play_season_idx < fol->season_count) {
+                                files      = fol->seasons[play_season_idx].files;
+                                file_count = fol->seasons[play_season_idx].file_count;
+                            } else {
+                                files      = fol->files;
+                                file_count = fol->file_count;
+                            }
+                            (void)file_count;
                             if (play_file_idx > 0) {
-                                const MediaFolder *fol = &lib.folders[play_folder_idx];
                                 int nidx = play_file_idx - 1;
                                 resume_save(player.path,
                                             audio_get_clock(&player.audio),
@@ -605,9 +640,9 @@ int main(int argc, char *argv[]) {
 #endif
                                 player_close(&player);
                                 char errbuf[256] = {0};
-                                if (do_play(&player, fol->files[nidx].path, renderer,
+                                if (do_play(&player, files[nidx].path, renderer,
                                             &state, &lib,
-                                            &play_folder_idx, &play_file_idx,
+                                            &play_folder_idx, &play_file_idx, &play_season_idx,
                                             &last_resume_save,
                                             errbuf, sizeof(errbuf)) == 0) {
                                     double sv = resume_load(player.path);
@@ -616,19 +651,30 @@ int main(int argc, char *argv[]) {
                                         player_show_osd(&player);
                                     }
                                 } else {
-                                    strncpy(error_path, fol->files[nidx].path,
+                                    strncpy(error_path, files[nidx].path,
                                             sizeof(error_path) - 1);
                                     strncpy(error_msg, errbuf, sizeof(error_msg) - 1);
                                     error_active = 1;
                                     mode = MODE_BROWSER;
                                     state.prog_folder_idx = -1;
+                                    state.prog_season_idx = -1;
                                 }
                             }
                             break;
                         }
                         case SDLK_PERIOD: {
                             const MediaFolder *fol = &lib.folders[play_folder_idx];
-                            if (play_file_idx + 1 < fol->file_count) {
+                            const VideoFile *files;
+                            int file_count;
+                            if (fol->is_show && play_season_idx >= 0 &&
+                                    play_season_idx < fol->season_count) {
+                                files      = fol->seasons[play_season_idx].files;
+                                file_count = fol->seasons[play_season_idx].file_count;
+                            } else {
+                                files      = fol->files;
+                                file_count = fol->file_count;
+                            }
+                            if (play_file_idx + 1 < file_count) {
                                 int nidx = play_file_idx + 1;
                                 resume_save(player.path,
                                             audio_get_clock(&player.audio),
@@ -638,9 +684,9 @@ int main(int argc, char *argv[]) {
 #endif
                                 player_close(&player);
                                 char errbuf[256] = {0};
-                                if (do_play(&player, fol->files[nidx].path, renderer,
+                                if (do_play(&player, files[nidx].path, renderer,
                                             &state, &lib,
-                                            &play_folder_idx, &play_file_idx,
+                                            &play_folder_idx, &play_file_idx, &play_season_idx,
                                             &last_resume_save,
                                             errbuf, sizeof(errbuf)) == 0) {
                                     double sv = resume_load(player.path);
@@ -649,12 +695,13 @@ int main(int argc, char *argv[]) {
                                         player_show_osd(&player);
                                     }
                                 } else {
-                                    strncpy(error_path, fol->files[nidx].path,
+                                    strncpy(error_path, files[nidx].path,
                                             sizeof(error_path) - 1);
                                     strncpy(error_msg, errbuf, sizeof(error_msg) - 1);
                                     error_active = 1;
                                     mode = MODE_BROWSER;
                                     state.prog_folder_idx = -1;
+                                    state.prog_season_idx = -1;
                                 }
                             }
                             break;
@@ -666,6 +713,7 @@ int main(int argc, char *argv[]) {
                                         player.probe.duration_sec);
                             player_close(&player);
                             state.prog_folder_idx = -1;
+                            state.prog_season_idx = -1;
                             mode = MODE_BROWSER;
                             break;
                         default: break;
@@ -682,11 +730,21 @@ int main(int argc, char *argv[]) {
                 resume_clear(player.path);
                 player_close(&player);
 
-                /* Check if there is a next file in the same folder */
+                /* Check if there is a next file in the same folder/season */
                 const MediaFolder *folder = &lib.folders[play_folder_idx];
+                const VideoFile *eos_files;
+                int eos_count;
+                if (folder->is_show && play_season_idx >= 0 &&
+                        play_season_idx < folder->season_count) {
+                    eos_files = folder->seasons[play_season_idx].files;
+                    eos_count = folder->seasons[play_season_idx].file_count;
+                } else {
+                    eos_files = folder->files;
+                    eos_count = folder->file_count;
+                }
                 int next = play_file_idx + 1;
-                if (next < folder->file_count) {
-                    strncpy(upnext_path, folder->files[next].path,
+                if (next < eos_count) {
+                    strncpy(upnext_path, eos_files[next].path,
                             sizeof(upnext_path) - 1);
                     upnext_folder_idx = play_folder_idx;
                     upnext_file_idx   = next;
@@ -694,6 +752,7 @@ int main(int argc, char *argv[]) {
                     mode = MODE_UPNEXT;
                 } else {
                     state.prog_folder_idx = -1;
+                    state.prog_season_idx = -1;
                     mode = MODE_BROWSER;
                 }
             } else {
@@ -715,13 +774,14 @@ int main(int argc, char *argv[]) {
                 char errbuf[256] = {0};
                 if (do_play(&player, upnext_path, renderer,
                             &state, &lib,
-                            &play_folder_idx, &play_file_idx,
+                            &play_folder_idx, &play_file_idx, &play_season_idx,
                             &last_resume_save,
                             errbuf, sizeof(errbuf)) != 0) {
                     strncpy(error_path, upnext_path, sizeof(error_path) - 1);
                     strncpy(error_msg, errbuf, sizeof(error_msg) - 1);
                     error_active = 1;
                     state.prog_folder_idx = -1;
+                    state.prog_season_idx = -1;
                     mode = MODE_BROWSER;
                 } else {
                     mode = MODE_PLAYBACK;

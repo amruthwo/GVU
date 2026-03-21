@@ -33,13 +33,11 @@ static const int SCAN_ROOT_COUNT = 2;
 
 /* -------------------------------------------------------------------------
  * Natural sort comparator
- * Numeric runs are compared as integers so S01E09 < S01E10.
  * ---------------------------------------------------------------------- */
 
 static int natural_cmp(const char *a, const char *b) {
     while (*a && *b) {
         if (isdigit((unsigned char)*a) && isdigit((unsigned char)*b)) {
-            /* compare the numeric run as an integer */
             char *end_a, *end_b;
             long na = strtol(a, &end_a, 10);
             long nb = strtol(b, &end_b, 10);
@@ -50,8 +48,7 @@ static int natural_cmp(const char *a, const char *b) {
             int ca = tolower((unsigned char)*a);
             int cb = tolower((unsigned char)*b);
             if (ca != cb) return ca - cb;
-            a++;
-            b++;
+            a++; b++;
         }
     }
     return (unsigned char)*a - (unsigned char)*b;
@@ -60,9 +57,11 @@ static int natural_cmp(const char *a, const char *b) {
 static int videofile_cmp(const void *x, const void *y) {
     return natural_cmp(((VideoFile *)x)->name, ((VideoFile *)y)->name);
 }
-
 static int mediafolder_cmp(const void *x, const void *y) {
     return natural_cmp(((MediaFolder *)x)->name, ((MediaFolder *)y)->name);
+}
+static int season_cmp(const void *x, const void *y) {
+    return natural_cmp(((Season *)x)->name, ((Season *)y)->name);
 }
 
 /* -------------------------------------------------------------------------
@@ -95,8 +94,28 @@ static int path_exists(const char *path) {
     return stat(path, &st) == 0;
 }
 
+/* Returns 1 if path contains at least one video file directly (not recursed) */
+static int has_direct_video_files(const char *path) {
+    DIR *d = opendir(path);
+    if (!d) return 0;
+    struct dirent *ent;
+    int found = 0;
+    while ((ent = readdir(d)) != NULL && !found) {
+        if (ent->d_name[0] == '.') continue;
+        /* Only care about regular files with video extensions */
+        char *child = path_join(path, ent->d_name);
+        if (child) {
+            if (!path_is_dir(child) && has_video_ext(ent->d_name))
+                found = 1;
+            free(child);
+        }
+    }
+    closedir(d);
+    return found;
+}
+
 /* -------------------------------------------------------------------------
- * MediaFolder / MediaLibrary growth
+ * Growth helpers for MediaFolder (flat) and Season
  * ---------------------------------------------------------------------- */
 
 static void folder_add_file(MediaFolder *f, const char *dir, const char *name) {
@@ -110,6 +129,26 @@ static void folder_add_file(MediaFolder *f, const char *dir, const char *name) {
     vf->name = strdup(name);
 }
 
+static void season_add_file(Season *s, const char *dir, const char *name) {
+    if (s->file_count == s->file_cap) {
+        int newcap = s->file_cap ? s->file_cap * 2 : 8;
+        s->files   = realloc(s->files, (size_t)newcap * sizeof(VideoFile));
+        s->file_cap = newcap;
+    }
+    VideoFile *vf = &s->files[s->file_count++];
+    vf->path = path_join(dir, name);
+    vf->name = strdup(name);
+}
+
+static void show_add_season(MediaFolder *show, Season *s) {
+    if (show->season_count == show->season_cap) {
+        int newcap = show->season_cap ? show->season_cap * 2 : 4;
+        show->seasons   = realloc(show->seasons, (size_t)newcap * sizeof(Season));
+        show->season_cap = newcap;
+    }
+    show->seasons[show->season_count++] = *s;
+}
+
 static void library_add_folder(MediaLibrary *lib, MediaFolder *f) {
     if (lib->folder_count == lib->folder_cap) {
         int newcap  = lib->folder_cap ? lib->folder_cap * 2 : 16;
@@ -120,64 +159,180 @@ static void library_add_folder(MediaLibrary *lib, MediaFolder *f) {
 }
 
 /* -------------------------------------------------------------------------
+ * Cover art lookup helper
+ * ---------------------------------------------------------------------- */
+
+static char *find_cover(const char *dir) {
+    char *cjpg = path_join(dir, "cover.jpg");
+    char *cpng = path_join(dir, "cover.png");
+    if (cjpg && path_exists(cjpg)) { free(cpng); return cjpg; }
+    if (cpng && path_exists(cpng)) { free(cjpg); return cpng; }
+    free(cjpg); free(cpng);
+    return NULL;
+}
+
+/* -------------------------------------------------------------------------
  * Recursive scan
  *
- * A directory is a "media folder" if it directly contains at least one
- * video file. Sub-directories are always recursed into as well.
+ * Detection rules:
+ *   1. Directory has direct video files
+ *      → flat MediaFolder (is_show=0), recurse into sub-dirs normally
+ *
+ *   2. Directory has no direct videos, but immediate sub-dirs that do
+ *      → show container (is_show=1) with those sub-dirs as seasons
+ *      Single-season shows are promoted to flat (season level skipped)
+ *
+ *   3. Neither → skip this folder, recurse into sub-dirs
  * ---------------------------------------------------------------------- */
 
 static void scan_dir(MediaLibrary *lib, const char *path) {
     DIR *d = opendir(path);
     if (!d) return;
 
-    MediaFolder folder = {0};
-    folder.path = strdup(path);
-    /* basename: last component after '/' */
-    const char *slash = strrchr(path, '/');
-    folder.name = strdup(slash ? slash + 1 : path);
+    /* --- Pass 1: quick scan to decide which case we're in --- */
+    int direct_video_count = 0;
+    int video_subdir_count = 0;
 
     struct dirent *ent;
     while ((ent = readdir(d)) != NULL) {
-        if (ent->d_name[0] == '.') continue; /* skip hidden + . .. */
-
+        if (ent->d_name[0] == '.') continue;
         char *child = path_join(path, ent->d_name);
         if (!child) continue;
-
         if (path_is_dir(child)) {
-            scan_dir(lib, child); /* recurse */
+            if (has_direct_video_files(child))
+                video_subdir_count++;
         } else if (has_video_ext(ent->d_name)) {
-            folder_add_file(&folder, path, ent->d_name);
+            direct_video_count++;
+        }
+        free(child);
+    }
+
+    /* --- Case 1: flat folder --- */
+    if (direct_video_count > 0) {
+        MediaFolder folder = {0};
+        folder.path   = strdup(path);
+        const char *slash = strrchr(path, '/');
+        folder.name   = strdup(slash ? slash + 1 : path);
+        folder.is_show = 0;
+
+        rewinddir(d);
+        while ((ent = readdir(d)) != NULL) {
+            if (ent->d_name[0] == '.') continue;
+            char *child = path_join(path, ent->d_name);
+            if (!child) continue;
+            if (path_is_dir(child)) {
+                scan_dir(lib, child);   /* recurse into sub-dirs */
+            } else if (has_video_ext(ent->d_name)) {
+                folder_add_file(&folder, path, ent->d_name);
+            }
+            free(child);
+        }
+
+        qsort(folder.files, (size_t)folder.file_count,
+              sizeof(VideoFile), videofile_cmp);
+        folder.cover = find_cover(path);
+        library_add_folder(lib, &folder);
+        closedir(d);
+        return;
+    }
+
+    /* --- Case 2 or 3: no direct videos --- */
+    if (video_subdir_count == 0) {
+        /* Case 3: recurse into sub-dirs only */
+        rewinddir(d);
+        while ((ent = readdir(d)) != NULL) {
+            if (ent->d_name[0] == '.') continue;
+            char *child = path_join(path, ent->d_name);
+            if (child && path_is_dir(child))
+                scan_dir(lib, child);
+            free(child);
+        }
+        closedir(d);
+        return;
+    }
+
+    /* --- Case 2: show container — build seasons --- */
+    MediaFolder show = {0};
+    show.path    = strdup(path);
+    const char *slash = strrchr(path, '/');
+    show.name    = strdup(slash ? slash + 1 : path);
+    show.is_show = 1;
+
+    rewinddir(d);
+    while ((ent = readdir(d)) != NULL) {
+        if (ent->d_name[0] == '.') continue;
+        char *child = path_join(path, ent->d_name);
+        if (!child) continue;
+        if (path_is_dir(child)) {
+            if (has_direct_video_files(child)) {
+                /* Build a season */
+                Season season = {0};
+                season.path = strdup(child);
+                const char *s = strrchr(child, '/');
+                season.name = strdup(s ? s + 1 : child);
+
+                DIR *sd = opendir(child);
+                if (sd) {
+                    struct dirent *sent;
+                    while ((sent = readdir(sd)) != NULL) {
+                        if (sent->d_name[0] == '.') continue;
+                        char *sc = path_join(child, sent->d_name);
+                        if (sc && !path_is_dir(sc) &&
+                            has_video_ext(sent->d_name)) {
+                            season_add_file(&season, child, sent->d_name);
+                        }
+                        free(sc);
+                    }
+                    closedir(sd);
+                }
+
+                if (season.file_count > 0) {
+                    qsort(season.files, (size_t)season.file_count,
+                          sizeof(VideoFile), videofile_cmp);
+                    season.cover = find_cover(child);
+                    show_add_season(&show, &season);
+                } else {
+                    /* Empty season dir — free and skip */
+                    free(season.path);
+                    free(season.name);
+                    free(season.files);
+                }
+            } else {
+                /* Child dir has no direct videos — recurse deeper */
+                scan_dir(lib, child);
+            }
         }
         free(child);
     }
     closedir(d);
 
-    if (folder.file_count > 0) {
-        /* Sort files in natural order */
-        qsort(folder.files, (size_t)folder.file_count, sizeof(VideoFile), videofile_cmp);
-
-        /* Cover art lookup */
-        char *cjpg = path_join(path, "cover.jpg");
-        char *cpng = path_join(path, "cover.png");
-        if (cjpg && path_exists(cjpg)) {
-            folder.cover = cjpg;
-            free(cpng);
-        } else if (cpng && path_exists(cpng)) {
-            folder.cover = cpng;
-            free(cjpg);
-        } else {
-            free(cjpg);
-            free(cpng);
-            folder.cover = NULL; /* will use default_cover */
-        }
-
-        library_add_folder(lib, &folder);
-    } else {
-        /* No video files directly here — discard the folder entry */
-        free(folder.path);
-        free(folder.name);
-        free(folder.files);
+    if (show.season_count == 0) {
+        free(show.path); free(show.name);
+        return;
     }
+
+    qsort(show.seasons, (size_t)show.season_count, sizeof(Season), season_cmp);
+    show.cover = find_cover(path);
+
+    /* Single-season promotion: skip the seasons level, treat as flat folder */
+    if (show.season_count == 1) {
+        Season *only = &show.seasons[0];
+        show.is_show   = 0;
+        show.files     = only->files;     only->files = NULL;
+        show.file_count = only->file_count;
+        show.file_cap   = only->file_cap;
+        /* Use season cover if show has none */
+        if (!show.cover && only->cover) {
+            show.cover = only->cover; only->cover = NULL;
+        }
+        free(only->path); free(only->name); free(only->cover);
+        free(show.seasons);
+        show.seasons     = NULL;
+        show.season_count = 0;
+        show.season_cap   = 0;
+    }
+
+    library_add_folder(lib, &show);
 }
 
 /* -------------------------------------------------------------------------
@@ -189,20 +344,35 @@ void library_scan(MediaLibrary *lib) {
     for (int i = 0; i < SCAN_ROOT_COUNT; i++) {
         scan_dir(lib, SCAN_ROOTS[i]);
     }
-    /* Sort folders in natural order */
     if (lib->folder_count > 1) {
-        qsort(lib->folders, (size_t)lib->folder_count, sizeof(MediaFolder), mediafolder_cmp);
+        qsort(lib->folders, (size_t)lib->folder_count,
+              sizeof(MediaFolder), mediafolder_cmp);
     }
 }
 
 void library_free(MediaLibrary *lib) {
     for (int i = 0; i < lib->folder_count; i++) {
         MediaFolder *f = &lib->folders[i];
-        for (int j = 0; j < f->file_count; j++) {
-            free(f->files[j].path);
-            free(f->files[j].name);
+        if (f->is_show) {
+            for (int si = 0; si < f->season_count; si++) {
+                Season *s = &f->seasons[si];
+                for (int j = 0; j < s->file_count; j++) {
+                    free(s->files[j].path);
+                    free(s->files[j].name);
+                }
+                free(s->files);
+                free(s->path);
+                free(s->name);
+                free(s->cover);
+            }
+            free(f->seasons);
+        } else {
+            for (int j = 0; j < f->file_count; j++) {
+                free(f->files[j].path);
+                free(f->files[j].name);
+            }
+            free(f->files);
         }
-        free(f->files);
         free(f->path);
         free(f->name);
         free(f->cover);

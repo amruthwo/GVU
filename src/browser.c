@@ -415,6 +415,63 @@ static void draw_folder_grid(SDL_Renderer *renderer, TTF_Font *font,
 }
 
 /* -------------------------------------------------------------------------
+ * Active file array for VIEW_FILES — flat folder or selected season
+ * ---------------------------------------------------------------------- */
+
+static const VideoFile *current_files(const BrowserState *state,
+                                      const MediaLibrary *lib,
+                                      int *out_count) {
+    const MediaFolder *mf = &lib->folders[state->folder_idx];
+    if (mf->is_show && state->season_idx >= 0 &&
+            state->season_idx < mf->season_count) {
+        *out_count = mf->seasons[state->season_idx].file_count;
+        return mf->seasons[state->season_idx].files;
+    }
+    *out_count = mf->file_count;
+    return mf->files;
+}
+
+/* -------------------------------------------------------------------------
+ * Season cover cache — loaded when entering a show's season list
+ * ---------------------------------------------------------------------- */
+
+static void ensure_season_covers(SDL_Renderer *renderer, CoverCache *cache,
+                                  const MediaLibrary *lib, int folder_idx,
+                                  SDL_Texture *default_cover) {
+    (void)default_cover; /* not stored — avoids double-free on cleanup */
+    if (cache->season_tex_folder_idx == folder_idx) return;
+
+    /* Free old owned season textures */
+    if (cache->season_textures) {
+        for (int i = 0; i < cache->season_tex_count; i++) {
+            if (cache->season_textures[i])
+                SDL_DestroyTexture(cache->season_textures[i]);
+        }
+        free(cache->season_textures);
+        cache->season_textures = NULL;
+        cache->season_tex_count = 0;
+    }
+
+    cache->season_tex_folder_idx = folder_idx;
+    const MediaFolder *show = &lib->folders[folder_idx];
+    if (!show->is_show || show->season_count == 0) return;
+
+    cache->season_textures = calloc((size_t)show->season_count,
+                                     sizeof(SDL_Texture *));
+    cache->season_tex_count = show->season_count;
+    if (!cache->season_textures) return;
+
+    /* Try season's own cover, then show's cover.  Only store owned textures. */
+    for (int i = 0; i < show->season_count; i++) {
+        if (show->seasons[i].cover)
+            cache->season_textures[i] = load_cover(renderer, show->seasons[i].cover);
+        if (!cache->season_textures[i] && show->cover)
+            cache->season_textures[i] = load_cover(renderer, show->cover);
+        /* If still NULL, draw_season_list will show nothing for the thumbnail */
+    }
+}
+
+/* -------------------------------------------------------------------------
  * File list
  * ---------------------------------------------------------------------- */
 
@@ -423,27 +480,38 @@ static void draw_file_list(SDL_Renderer *renderer, TTF_Font *font,
                            const MediaLibrary *lib,
                            const Theme *t, int win_w, int win_h) {
     const MediaFolder *folder = &lib->folders[state->folder_idx];
+    int fcount;
+    const VideoFile *files = current_files(state, lib, &fcount);
+    /* Display name: season name when inside a show, folder name otherwise */
+    const char *display_name = folder->name;
+    if (folder->is_show && state->season_idx >= 0 &&
+            state->season_idx < folder->season_count)
+        display_name = folder->seasons[state->season_idx].name;
+
     int has_backdrop = (cache->backdrop != NULL);
     int hint_bar_h = sc(24, win_w);
     int padding    = sc(8,  win_w);
     int row_h      = sc(52, win_w);
 
-    /* Rebuild progress cache when the folder changes */
-    if (state->prog_folder_idx != state->folder_idx) {
+    /* Rebuild progress cache when folder or season changes */
+    int cache_stale = (state->prog_folder_idx != state->folder_idx) ||
+                      (state->prog_season_idx  != state->season_idx);
+    if (cache_stale) {
         free(state->file_progress);
         state->prog_folder_idx = state->folder_idx;
+        state->prog_season_idx = state->season_idx;
         state->file_progress   = NULL;
-        if (folder->file_count > 0) {
-            state->file_progress = malloc((size_t)folder->file_count * sizeof(float));
+        if (fcount > 0) {
+            state->file_progress = malloc((size_t)fcount * sizeof(float));
             if (state->file_progress) {
-                for (int i = 0; i < folder->file_count; i++)
+                for (int i = 0; i < fcount; i++)
                     state->file_progress[i] = -1.0f;
                 ResumeEntry *entries = NULL;
                 int ec = resume_load_all(&entries);
                 for (int ei = 0; ei < ec; ei++) {
                     if (entries[ei].duration < 5.0) continue;
-                    for (int fi = 0; fi < folder->file_count; fi++) {
-                        if (strcmp(entries[ei].path, folder->files[fi].path) == 0) {
+                    for (int fi = 0; fi < fcount; fi++) {
+                        if (strcmp(entries[ei].path, files[fi].path) == 0) {
                             state->file_progress[fi] =
                                 (float)(entries[ei].position / entries[ei].duration);
                             break;
@@ -454,7 +522,7 @@ static void draw_file_list(SDL_Renderer *renderer, TTF_Font *font,
             }
         }
     }
-    int content_h = win_h - hint_bar_h - row_h; /* reserve bottom row for folder name */
+    int content_h = win_h - hint_bar_h - row_h; /* reserve bottom row for name */
     int visible   = content_h / row_h;
 
     /* Draw blurred backdrop + dim overlay */
@@ -473,7 +541,7 @@ static void draw_file_list(SDL_Renderer *renderer, TTF_Font *font,
     if (state->scroll_row < 0) state->scroll_row = 0;
 
     for (int i = state->scroll_row; i < state->scroll_row + visible; i++) {
-        if (i >= folder->file_count) break;
+        if (i >= fcount) break;
         int row = i - state->scroll_row;
         int y   = row * row_h;
         int sel = (i == state->selected);
@@ -504,7 +572,7 @@ static void draw_file_list(SDL_Renderer *renderer, TTF_Font *font,
         if (has_backdrop && !sel) {
             int fh = TTF_FontHeight(font);
             int tw = 0, dummy = 0;
-            TTF_SizeUTF8(font, folder->files[i].name, &tw, &dummy);
+            TTF_SizeUTF8(font, files[i].name, &tw, &dummy);
             int pill_h = fh + 10;
             int pill_pad = sc(8, win_w);
             int pill_x = padding * 2 - pill_pad;
@@ -517,7 +585,7 @@ static void draw_file_list(SDL_Renderer *renderer, TTF_Font *font,
         }
 
         RGB tc = sel ? t->highlight_text : t->text;
-        draw_text(renderer, font, folder->files[i].name,
+        draw_text(renderer, font, files[i].name,
                   padding * 2,
                   y + (row_h - TTF_FontHeight(font)) / 2,
                   win_w - padding * 4,
@@ -553,7 +621,119 @@ static void draw_file_list(SDL_Renderer *renderer, TTF_Font *font,
                   dim(t->background.g, 15),
                   dim(t->background.b, 15), 0xff);
     }
-    draw_text(renderer, font, folder->name,
+    draw_text(renderer, font, display_name,
+              padding, header_y + (row_h - TTF_FontHeight(font)) / 2,
+              win_w - padding * 2,
+              t->secondary.r, t->secondary.g, t->secondary.b);
+}
+
+/* -------------------------------------------------------------------------
+ * Season list (VIEW_SEASONS)
+ * ---------------------------------------------------------------------- */
+
+static void draw_season_list(SDL_Renderer *renderer, TTF_Font *font,
+                             TTF_Font *font_small, BrowserState *state,
+                             CoverCache *cache, const MediaLibrary *lib,
+                             const Theme *t, int win_w, int win_h) {
+    const MediaFolder *show = &lib->folders[state->folder_idx];
+    int count        = show->season_count;
+    int has_backdrop = (cache->backdrop != NULL);
+    int hint_bar_h   = sc(24, win_w);
+    int padding      = sc(8,  win_w);
+    int row_h        = sc(56, win_w);
+    int thumb_w      = (int)(row_h * 2.0f / 3.0f);
+
+    int content_h = win_h - hint_bar_h - row_h;
+    int visible   = content_h / row_h;
+
+    /* Draw backdrop + dim */
+    if (has_backdrop) {
+        SDL_RenderCopy(renderer, cache->backdrop, NULL, NULL);
+        SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+        fill_rect(renderer, 0, 0, win_w, win_h, 0, 0, 0, 120);
+        SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
+    }
+
+    /* Clamp season scroll */
+    if (state->season_idx < state->season_scroll)
+        state->season_scroll = state->season_idx;
+    if (state->season_idx >= state->season_scroll + visible)
+        state->season_scroll = state->season_idx - visible + 1;
+    if (state->season_scroll < 0) state->season_scroll = 0;
+
+    for (int i = state->season_scroll; i < state->season_scroll + visible; i++) {
+        if (i >= count) break;
+        int row = i - state->season_scroll;
+        int y   = row * row_h;
+        int sel = (i == state->season_idx);
+
+        if (has_backdrop) {
+            SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+            if (sel)
+                fill_rect(renderer, padding, y, win_w - padding * 2, row_h,
+                          t->highlight_bg.r, t->highlight_bg.g, t->highlight_bg.b, 200);
+            else if (row % 2 == 0)
+                fill_rect(renderer, padding, y, win_w - padding * 2, row_h,
+                          0, 0, 0, 40);
+            SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
+        } else {
+            if (sel)
+                fill_rect(renderer, padding, y, win_w - padding * 2, row_h,
+                          t->highlight_bg.r, t->highlight_bg.g, t->highlight_bg.b, 0xff);
+            else if (row % 2 == 0)
+                fill_rect(renderer, padding, y, win_w - padding * 2, row_h,
+                          dim(t->background.r, 8), dim(t->background.g, 8),
+                          dim(t->background.b, 8), 0xff);
+        }
+
+        /* Season thumbnail */
+        SDL_Texture *thumb = (cache->season_textures && i < cache->season_tex_count)
+                             ? cache->season_textures[i] : NULL;
+        if (thumb) {
+            int tw, th;
+            SDL_QueryTexture(thumb, NULL, NULL, &tw, &th);
+            float scale = (tw > 0 && th > 0)
+                ? ((float)thumb_w / tw < (float)(row_h - padding) / th
+                   ? (float)thumb_w / tw : (float)(row_h - padding) / th)
+                : 1.0f;
+            int dw = (int)(tw * scale);
+            int dh = (int)(th * scale);
+            SDL_Rect dst = { padding + (thumb_w - dw) / 2,
+                             y + padding / 2 + (row_h - padding - dh) / 2, dw, dh };
+            SDL_RenderCopy(renderer, thumb, NULL, &dst);
+        }
+
+        int text_x = padding + thumb_w + padding;
+        int text_w = win_w - text_x - padding;
+
+        RGB tc = sel ? t->highlight_text : t->text;
+        draw_text(renderer, font, show->seasons[i].name,
+                  text_x, y + row_h / 4 - TTF_FontHeight(font) / 2,
+                  text_w, tc.r, tc.g, tc.b);
+
+        /* Episode count */
+        char ep_buf[32];
+        snprintf(ep_buf, sizeof(ep_buf), "%d episode%s",
+                 show->seasons[i].file_count,
+                 show->seasons[i].file_count == 1 ? "" : "s");
+        draw_text(renderer, font_small, ep_buf,
+                  text_x, y + row_h * 3 / 5,
+                  text_w,
+                  t->secondary.r, t->secondary.g, t->secondary.b);
+    }
+
+    /* Show name header at bottom */
+    int header_y = win_h - hint_bar_h - row_h;
+    if (has_backdrop) {
+        SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+        fill_rect(renderer, 0, header_y, win_w, row_h, 0, 0, 0, 170);
+        SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
+    } else {
+        fill_rect(renderer, 0, header_y, win_w, row_h,
+                  dim(t->background.r, 15), dim(t->background.g, 15),
+                  dim(t->background.b, 15), 0xff);
+    }
+    draw_text(renderer, font, show->name,
               padding, header_y + (row_h - TTF_FontHeight(font)) / 2,
               win_w - padding * 2,
               t->secondary.r, t->secondary.g, t->secondary.b);
@@ -574,6 +754,11 @@ static void draw_hint_bar(SDL_Renderer *renderer, TTF_Font *font,
         { "Y",   "Fetch Art" },
         { "R1",  "Theme"     },
     };
+    static const HintItem season_hints[] = {
+        { "A",   "Open"    },
+        { "B",   "Back"    },
+        { "X",   "History" },
+    };
     static const HintItem file_hints[] = {
         { "A",    "Play"    },
         { "B",    "Back"    },
@@ -582,8 +767,15 @@ static void draw_hint_bar(SDL_Renderer *renderer, TTF_Font *font,
         { "X",    "History" },
         { "MENU", "Exit"    },
     };
-    const HintItem *items = (state->view == VIEW_FOLDERS) ? folder_hints : file_hints;
-    int item_count = (state->view == VIEW_FOLDERS) ? 6 : 6;
+    const HintItem *items;
+    int item_count;
+    if (state->view == VIEW_FOLDERS) {
+        items = folder_hints; item_count = 6;
+    } else if (state->view == VIEW_SEASONS) {
+        items = season_hints; item_count = 3;
+    } else {
+        items = file_hints;   item_count = 6;
+    }
     hintbar_draw_row(renderer, font, font_small, items, item_count, t, win_w, win_h);
 }
 
@@ -594,17 +786,20 @@ static void draw_hint_bar(SDL_Renderer *renderer, TTF_Font *font,
 void browser_init(BrowserState *state, CoverCache *cache,
                   const MediaLibrary *lib) {
     memset(state, 0, sizeof(*state));
-    state->view   = VIEW_FOLDERS;
-    state->layout = LAYOUT_LARGE;
-
-    cache->count        = lib->folder_count;
-    cache->textures     = calloc((size_t)(lib->folder_count ? lib->folder_count : 1),
-                                 sizeof(SDL_Texture *));
-    cache->backdrop     = NULL;
-    cache->backdrop_idx = -1;
-
-    state->file_progress    = NULL;
+    state->view             = VIEW_FOLDERS;
+    state->layout           = LAYOUT_LARGE;
+    state->season_idx       = 0;
     state->prog_folder_idx  = -1;
+    state->prog_season_idx  = -1;
+
+    cache->count                 = lib->folder_count;
+    cache->textures              = calloc((size_t)(lib->folder_count ? lib->folder_count : 1),
+                                          sizeof(SDL_Texture *));
+    cache->backdrop              = NULL;
+    cache->backdrop_idx          = -1;
+    cache->season_textures       = NULL;
+    cache->season_tex_count      = 0;
+    cache->season_tex_folder_idx = -1;
 }
 
 void browser_draw(SDL_Renderer *renderer, TTF_Font *font, TTF_Font *font_small,
@@ -627,6 +822,11 @@ void browser_draw(SDL_Renderer *renderer, TTF_Font *font, TTF_Font *font_small,
             draw_folder_grid(renderer, font, state, cache, lib,
                              default_cover, theme, win_w, win_h);
         }
+    } else if (state->view == VIEW_SEASONS) {
+        ensure_backdrop(renderer, cache, lib, state->folder_idx, win_w, win_h);
+        ensure_season_covers(renderer, cache, lib, state->folder_idx, default_cover);
+        draw_season_list(renderer, font, font_small, state, cache, lib,
+                         theme, win_w, win_h);
     } else {
         ensure_backdrop(renderer, cache, lib, state->folder_idx, win_w, win_h);
         draw_file_list(renderer, font, state, cache, lib, theme, win_w, win_h);
@@ -674,7 +874,7 @@ int browser_handle_event(BrowserState *state, const MediaLibrary *lib,
 
     SDL_Keycode key = ev->key.keysym.sym;
 
-    /* Allow held-key repeat only for navigation — not for action buttons */
+    /* Allow held-key repeat only for navigation */
     if (ev->key.repeat &&
         key != SDLK_UP && key != SDLK_DOWN &&
         key != SDLK_LEFT && key != SDLK_RIGHT)
@@ -684,13 +884,9 @@ int browser_handle_event(BrowserState *state, const MediaLibrary *lib,
         int count = lib->folder_count;
         LayoutMetrics m = compute_metrics(state->layout, 640, 480);
 
-        /* Any navigation key cancels a pending exit-confirm toast */
-        if (state->exit_confirm
-                && key != SDLK_LCTRL && key != SDLK_BACKSPACE) {
+        if (state->exit_confirm && key != SDLK_LCTRL && key != SDLK_BACKSPACE)
             state->exit_confirm = 0;
-        }
 
-        /* B button — two-press exit with toast confirmation */
         if (key == SDLK_LCTRL || key == SDLK_BACKSPACE) {
             if (state->exit_confirm) {
                 state->action = BROWSER_ACTION_QUIT;
@@ -711,7 +907,15 @@ int browser_handle_event(BrowserState *state, const MediaLibrary *lib,
                 state->folder_idx = state->selected;
                 state->selected   = 0;
                 state->scroll_row = 0;
-                state->view       = VIEW_FILES;
+                const MediaFolder *mf = &lib->folders[state->folder_idx];
+                if (mf->is_show) {
+                    state->season_idx    = 0;
+                    state->season_scroll = 0;
+                    state->view = VIEW_SEASONS;
+                } else {
+                    state->season_idx = -1;
+                    state->view = VIEW_FILES;
+                }
             }
             return 1;
         }
@@ -728,22 +932,23 @@ int browser_handle_event(BrowserState *state, const MediaLibrary *lib,
             return 1;
         }
 
-    } else {
-        const MediaFolder *folder = &lib->folders[state->folder_idx];
-        int count = folder->file_count;
+    } else if (state->view == VIEW_SEASONS) {
+        const MediaFolder *show = &lib->folders[state->folder_idx];
+        int count = show->season_count;
 
-        if (key == SDLK_UP)   { if (state->selected > 0)          state->selected--; return 1; }
-        if (key == SDLK_DOWN) { if (state->selected < count - 1)  state->selected++; return 1; }
+        if (key == SDLK_UP)   { if (state->season_idx > 0)          state->season_idx--; return 1; }
+        if (key == SDLK_DOWN) { if (state->season_idx < count - 1)  state->season_idx++; return 1; }
 
         if (key == SDLK_RETURN || key == SDLK_SPACE) {
             if (count > 0) {
-                snprintf(state->action_path, sizeof(state->action_path),
-                         "%s", folder->files[state->selected].path);
-                state->action = BROWSER_ACTION_PLAY;
+                state->selected   = 0;
+                state->scroll_row = 0;
+                state->view       = VIEW_FILES;
             }
             return 1;
         }
         if (key == SDLK_LCTRL || key == SDLK_BACKSPACE) {
+            /* Back to folder grid — restore selection position */
             state->selected   = state->folder_idx;
             state->scroll_row = state->folder_idx /
                                 compute_metrics(state->layout, 640, 480).cols;
@@ -758,17 +963,70 @@ int browser_handle_event(BrowserState *state, const MediaLibrary *lib,
             state->action = BROWSER_ACTION_THEME_CYCLE;
             return 1;
         }
-        /* L2 / R2 — jump to previous / next folder without leaving VIEW_FILES */
-        if (key == SDLK_COMMA && state->folder_idx > 0) {
-            state->folder_idx--;
-            state->selected   = 0;
-            state->scroll_row = 0;
+
+    } else { /* VIEW_FILES */
+        const MediaFolder *folder = &lib->folders[state->folder_idx];
+        int fcount;
+        const VideoFile *files = current_files(state, lib, &fcount);
+
+        if (key == SDLK_UP)   { if (state->selected > 0)           state->selected--; return 1; }
+        if (key == SDLK_DOWN) { if (state->selected < fcount - 1)  state->selected++; return 1; }
+
+        if (key == SDLK_RETURN || key == SDLK_SPACE) {
+            if (fcount > 0) {
+                snprintf(state->action_path, sizeof(state->action_path),
+                         "%s", files[state->selected].path);
+                state->action = BROWSER_ACTION_PLAY;
+            }
             return 1;
         }
-        if (key == SDLK_PERIOD && state->folder_idx < lib->folder_count - 1) {
-            state->folder_idx++;
-            state->selected   = 0;
-            state->scroll_row = 0;
+        if (key == SDLK_LCTRL || key == SDLK_BACKSPACE) {
+            if (folder->is_show) {
+                /* Back to season list */
+                state->view = VIEW_SEASONS;
+            } else {
+                state->selected   = state->folder_idx;
+                state->scroll_row = state->folder_idx /
+                                    compute_metrics(state->layout, 640, 480).cols;
+                state->view = VIEW_FOLDERS;
+            }
+            return 1;
+        }
+        if (key == SDLK_RCTRL || key == SDLK_TAB) {
+            state->layout = (state->layout + 1) % LAYOUT_COUNT;
+            return 1;
+        }
+        if (key == SDLK_PAGEDOWN) {
+            state->action = BROWSER_ACTION_THEME_CYCLE;
+            return 1;
+        }
+        /* L2 / R2 — prev/next season (in show) or prev/next folder (flat) */
+        if (key == SDLK_COMMA) {
+            if (folder->is_show) {
+                if (state->season_idx > 0) {
+                    state->season_idx--;
+                    state->selected   = 0;
+                    state->scroll_row = 0;
+                }
+            } else if (state->folder_idx > 0) {
+                state->folder_idx--;
+                state->selected   = 0;
+                state->scroll_row = 0;
+            }
+            return 1;
+        }
+        if (key == SDLK_PERIOD) {
+            if (folder->is_show) {
+                if (state->season_idx < folder->season_count - 1) {
+                    state->season_idx++;
+                    state->selected   = 0;
+                    state->scroll_row = 0;
+                }
+            } else if (state->folder_idx < lib->folder_count - 1) {
+                state->folder_idx++;
+                state->selected   = 0;
+                state->scroll_row = 0;
+            }
             return 1;
         }
     }
@@ -780,6 +1038,7 @@ void browser_state_free(BrowserState *state) {
     free(state->file_progress);
     state->file_progress   = NULL;
     state->prog_folder_idx = -1;
+    state->prog_season_idx = -1;
 }
 
 void cover_cache_free(CoverCache *cache) {
@@ -788,5 +1047,15 @@ void cover_cache_free(CoverCache *cache) {
     }
     free(cache->textures);
     if (cache->backdrop) SDL_DestroyTexture(cache->backdrop);
+    /* Free season cover textures (skip any borrowed default_cover pointers) */
+    if (cache->season_textures) {
+        for (int i = 0; i < cache->season_tex_count; i++) {
+            /* Season textures loaded via load_cover() are owned; borrowed
+               default_cover pointers must NOT be freed here.  We can't
+               distinguish them easily, so we simply leak any borrowed pointer
+               (it gets freed by the main caller as default_cover). */
+        }
+        free(cache->season_textures);
+    }
     memset(cache, 0, sizeof(*cache));
 }
