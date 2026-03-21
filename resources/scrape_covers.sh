@@ -22,9 +22,9 @@ set -e
 FOLDER="$1"
 TMDB_KEY="${2:-}"
 
-TMDB_SEARCH="https://api.themoviedb.org/3/search/multi"
-TMDB_IMG_BASE="https://image.tmdb.org/t/p/w500"
-TVMAZE_SEARCH="https://api.tvmaze.com/singlesearch/shows"
+TMDB_SEARCH="http://api.themoviedb.org/3/search/multi"
+TMDB_IMG_BASE="http://image.tmdb.org/t/p/w500"
+TVMAZE_SEARCH="http://api.tvmaze.com/singlesearch/shows"
 
 if [ -z "$FOLDER" ]; then
     echo "Usage: scrape_covers.sh <folder_path> [tmdb_key]" >&2
@@ -72,7 +72,7 @@ cover_url=""
 if [ -n "$TMDB_KEY" ]; then
     echo "Trying TMDB..."
     url="${TMDB_SEARCH}?api_key=${TMDB_KEY}&query=${query}&page=1"
-    if wget -q --timeout=20 --no-check-certificate -O "$tmpfile" "$url" 2>/dev/null; then
+    if wget -q --timeout=20 -O "$tmpfile" "$url" 2>/dev/null; then
         # Split on commas so each JSON field is on its own line, then extract
         # the first "poster_path" value (skips "null" entries).
         poster=$(tr ',' '\n' < "$tmpfile" \
@@ -96,7 +96,7 @@ fi
 if [ -z "$cover_url" ]; then
     echo "Trying TVMaze..."
     url="${TVMAZE_SEARCH}?q=${query}"
-    if wget -q --timeout=20 --no-check-certificate -O "$tmpfile" "$url" 2>/dev/null; then
+    if wget -q --timeout=20 -O "$tmpfile" "$url" 2>/dev/null; then
         # TVMaze JSON: {...,"image":{"medium":"url","original":"url"},...}
         orig=$(tr ',' '\n' < "$tmpfile" \
                | grep '"original"' \
@@ -124,7 +124,7 @@ fi
 
 echo "Downloading: $cover_url"
 dest="${FOLDER}/cover.jpg"
-if wget -q --timeout=30 --no-check-certificate -O "$tmpimg" "$cover_url" 2>/dev/null; then
+if wget -q --timeout=30 -O "$tmpimg" "$cover_url" 2>/dev/null; then
     mv "$tmpimg" "$dest"
     echo "Saved: $dest"
     # Signal GVU that the scrape is complete

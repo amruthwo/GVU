@@ -495,6 +495,13 @@ int main(int argc, char *argv[]) {
                     history_free(&history);
                     mode = MODE_BROWSER;
                     history.action = HISTORY_ACTION_NONE;
+                } else if (history.action == HISTORY_ACTION_CLEAR) {
+                    resume_clear_all();
+                    history_free(&history);
+                    history_load(&history);   /* reload — both lists now empty */
+                    state.prog_folder_idx = -1;
+                    state.prog_season_idx = -1;
+                    history.action = HISTORY_ACTION_NONE;
                 } else if (history.action == HISTORY_ACTION_PLAY) {
                     double saved = resume_load(history.action_path);
                     if (saved > 5.0) {

@@ -335,8 +335,10 @@ void history_draw(SDL_Renderer *renderer, TTF_Font *font,
 
     /* ---- Hint bar ---- */
     if (total > 0) {
-        static const HintItem hints_with[] = { { "A", "Play" }, { "B", "Back" } };
-        hintbar_draw_row(renderer, font, font_small, hints_with, 2, t, win_w, win_h);
+        static const HintItem hints_with[] = {
+            { "A", "Play" }, { "B", "Back" }, { "SEL", "Clear All" }
+        };
+        hintbar_draw_row(renderer, font, font_small, hints_with, 3, t, win_w, win_h);
     } else {
         static const HintItem hints_empty[] = { { "B", "Back" } };
         hintbar_draw_row(renderer, font, font_small, hints_empty, 1, t, win_w, win_h);
@@ -353,6 +355,12 @@ int history_handle_event(HistoryState *h, const SDL_Event *ev) {
     if (key == SDLK_LCTRL || key == SDLK_BACKSPACE ||
         key == SDLK_LSHIFT /* X/Start button */) {
         h->action = HISTORY_ACTION_BACK;
+        return 1;
+    }
+
+    /* Clear all history */
+    if (key == SDLK_RCTRL) {
+        h->action = HISTORY_ACTION_CLEAR;
         return 1;
     }
 
