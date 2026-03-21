@@ -16,8 +16,9 @@ typedef enum {
 } BrowserLayout;
 
 typedef enum {
-    VIEW_FOLDERS = 0,   /* top-level: grid of media folders */
-    VIEW_FILES,         /* inside a folder: list of video files */
+    VIEW_FOLDERS = 0,   /* top-level: grid of shows / flat folders */
+    VIEW_SEASONS,       /* show's season list (skipped for single-season shows) */
+    VIEW_FILES,         /* episode list inside a season or flat folder */
 } BrowserView;
 
 typedef enum {
@@ -38,16 +39,19 @@ typedef struct {
     BrowserLayout layout;
     int           selected;     /* highlighted index in current view         */
     int           scroll_row;   /* first visible row (grid) or item (list)   */
-    int           folder_idx;   /* which folder is open (VIEW_FILES)         */
+    int           folder_idx;   /* which folder is open (VIEW_SEASONS/FILES) */
+    int           season_idx;   /* which season is open (VIEW_FILES in show) */
+    int           season_scroll; /* scroll offset for season list             */
 
     /* set when action == BROWSER_ACTION_PLAY */
     char          action_path[1024];
     BrowserAction action;
 
-    /* Per-file progress cache — rebuilt when folder_idx changes.
+    /* Per-file progress cache — rebuilt when folder/season changes.
        Values: -1.0 = no data, 0.0–1.0 = progress ratio (>=0.95 = completed). */
     float        *file_progress;
-    int           prog_folder_idx;  /* folder_idx the cache was built for, -1 = invalid */
+    int           prog_folder_idx;  /* folder the cache was built for, -1 = invalid */
+    int           prog_season_idx;  /* season the cache was built for, -1 = invalid */
 
     /* B-to-exit confirmation toast */
     int    exit_confirm;      /* 1 = awaiting second B press */
@@ -62,9 +66,14 @@ typedef struct {
     SDL_Texture **textures;   /* parallel to lib->folders */
     int           count;
 
-    /* Blurred backdrop for VIEW_FILES — rebuilt on folder change */
+    /* Blurred backdrop for VIEW_SEASONS / VIEW_FILES */
     SDL_Texture  *backdrop;
     int           backdrop_idx;  /* folder_idx it was built for; -1 = none */
+
+    /* Season cover thumbnails — rebuilt when entering a different show */
+    SDL_Texture **season_textures;
+    int           season_tex_count;
+    int           season_tex_folder_idx;  /* -1 = none */
 } CoverCache;
 
 /* -------------------------------------------------------------------------
