@@ -59,7 +59,10 @@ query=$(urlencode "$name")
 # Temp file for API responses
 # -------------------------------------------------------------------------
 tmpfile="/tmp/gvu_scrape_$$.json"
-trap 'rm -f "$tmpfile"' EXIT
+tmpimg="/tmp/gvu_cover_$$.jpg"
+# On any exit (normal or abnormal), clean up temps and ensure the sentinel
+# is always written so GVU never gets stuck showing the progress overlay.
+trap 'rm -f "$tmpfile" "$tmpimg"; [ -f /tmp/gvu_scrape_done ] || echo "error" > /tmp/gvu_scrape_done' EXIT
 
 cover_url=""
 
@@ -75,7 +78,7 @@ if [ -n "$TMDB_KEY" ]; then
         poster=$(tr ',' '\n' < "$tmpfile" \
                  | grep '"poster_path"' \
                  | head -1 \
-                 | sed 's/.*"poster_path":"\([^"]*\)".*/\1/')
+                 | sed 's/.*"poster_path":"\([^"]*\)".*/\1/' || true)
         if [ -n "$poster" ] && [ "$poster" != "null" ]; then
             cover_url="${TMDB_IMG_BASE}${poster}"
             echo "TMDB: found poster $poster"
@@ -98,7 +101,7 @@ if [ -z "$cover_url" ]; then
         orig=$(tr ',' '\n' < "$tmpfile" \
                | grep '"original"' \
                | head -1 \
-               | sed 's/.*"original":"\([^"]*\)".*/\1/')
+               | sed 's/.*"original":"\([^"]*\)".*/\1/' || true)
         if [ -n "$orig" ] && [ "$orig" != "null" ]; then
             cover_url="$orig"
             echo "TVMaze: found image"
@@ -121,13 +124,13 @@ fi
 
 echo "Downloading: $cover_url"
 dest="${FOLDER}/cover.jpg"
-if wget -q --timeout=30 --no-check-certificate -O "$dest" "$cover_url" 2>/dev/null; then
+if wget -q --timeout=30 --no-check-certificate -O "$tmpimg" "$cover_url" 2>/dev/null; then
+    mv "$tmpimg" "$dest"
     echo "Saved: $dest"
     # Signal GVU that the scrape is complete
     echo "ok" > /tmp/gvu_scrape_done
     exit 0
 else
-    rm -f "$dest"
     echo "ERROR: Download failed: $cover_url" >&2
     echo "error" > /tmp/gvu_scrape_done
     exit 1
