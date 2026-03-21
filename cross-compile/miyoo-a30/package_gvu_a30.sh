@@ -45,8 +45,10 @@ chmod +x "$APP/gvu32"
 cp -v "$BUILD/libs32/"* "$APP/libs32/"
 
 # Resources
-cp -v "$REPO_ROOT/resources/fonts/DejaVuSans.ttf" "$APP/resources/fonts/"
-cp -v "$REPO_ROOT/resources/default_cover.png"     "$APP/resources/"
+cp -v "$REPO_ROOT/resources/fonts/DejaVuSans.ttf"  "$APP/resources/fonts/"
+cp -v "$REPO_ROOT/resources/default_cover.png"      "$APP/resources/"
+cp -v "$REPO_ROOT/resources/scrape_covers.sh"       "$APP/resources/"
+chmod +x "$APP/resources/scrape_covers.sh"
 
 OUTFILE="$REPO_ROOT/build/gvu_spruce_a30_v${VERSION}.zip"
 (cd "$STAGE" && zip -r "$OUTFILE" spruce_gvu_pkg)

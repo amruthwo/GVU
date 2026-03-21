@@ -85,8 +85,9 @@ const int THEME_COUNT = (int)(sizeof(THEMES) / sizeof(THEMES[0]));
  * Active theme
  * ---------------------------------------------------------------------- */
 
-static int g_theme_idx     = 0;  /* default: SPRUCE */
-static int g_firstrun_done = 0;
+static int  g_theme_idx     = 0;  /* default: SPRUCE */
+static int  g_firstrun_done = 0;
+static char g_tmdb_key[128] = "";
 
 const Theme *theme_get(void) {
     return &THEMES[g_theme_idx];
@@ -99,11 +100,19 @@ void theme_cycle(void) {
 int config_firstrun_done(void) { return g_firstrun_done; }
 void config_set_firstrun_done(void) { g_firstrun_done = 1; }
 
+const char *config_tmdb_key(void) { return g_tmdb_key; }
+void config_set_tmdb_key(const char *key) {
+    strncpy(g_tmdb_key, key ? key : "", sizeof(g_tmdb_key) - 1);
+    g_tmdb_key[sizeof(g_tmdb_key) - 1] = '\0';
+}
+
 void config_save(const char *path) {
     FILE *f = fopen(path, "w");
     if (!f) return;
     fprintf(f, "theme = %s\n", THEMES[g_theme_idx].name);
     fprintf(f, "firstrun_done = %d\n", g_firstrun_done);
+    if (g_tmdb_key[0])
+        fprintf(f, "tmdb_key = %s\n", g_tmdb_key);
     fclose(f);
 }
 
@@ -150,6 +159,9 @@ void config_load(const char *path) {
                 fprintf(stderr, "gvu.conf: unknown theme '%s'\n", val);
         } else if (strcasecmp(key, "firstrun_done") == 0) {
             g_firstrun_done = (atoi(val) != 0);
+        } else if (strcasecmp(key, "tmdb_key") == 0) {
+            strncpy(g_tmdb_key, val, sizeof(g_tmdb_key) - 1);
+            g_tmdb_key[sizeof(g_tmdb_key) - 1] = '\0';
         }
     }
     fclose(f);
