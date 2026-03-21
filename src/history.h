@@ -14,6 +14,7 @@ typedef enum {
     HISTORY_ACTION_NONE = 0,
     HISTORY_ACTION_PLAY,    /* play action_path (with normal resume seek) */
     HISTORY_ACTION_BACK,    /* return to browser */
+    HISTORY_ACTION_CLEAR,   /* SELECT pressed — caller clears history files then reloads */
 } HistoryAction;
 
 typedef struct {

@@ -264,3 +264,9 @@ int resume_load_completed(char (**out)[1024]) {
     *out = paths;
     return count;
 }
+
+void resume_clear_all(void) {
+    FILE *f;
+    f = fopen(RESUME_FILE,  "w"); if (f) fclose(f);
+    f = fopen(HISTORY_FILE, "w"); if (f) fclose(f);
+}

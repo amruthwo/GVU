@@ -35,3 +35,6 @@ void   resume_record_completed(const char *path);
 /* Load recently-completed paths, most-recent first.
    Returns count; caller must free(*out) (heap array of char[1024]). */
 int    resume_load_completed  (char (**out)[1024]);
+
+/* Erase all resume and history data (truncates both .dat files). */
+void   resume_clear_all       (void);
