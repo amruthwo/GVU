@@ -1,0 +1,9 @@
+# Build outputs
+gvu
+gvu32
+build/
+
+# Runtime / generated files
+gvu.conf
+gvu.conf.bak
+icon.png
