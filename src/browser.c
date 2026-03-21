@@ -567,11 +567,12 @@ static void draw_hint_bar(SDL_Renderer *renderer, TTF_Font *font,
                           TTF_Font *font_small, const BrowserState *state,
                           const Theme *t, int win_w, int win_h) {
     static const HintItem folder_hints[] = {
-        { "A",   "Open"    },
-        { "B",   "Exit"    },
-        { "SEL", "Layout"  },
-        { "X",   "History" },
-        { "R1",  "Theme"   },
+        { "A",   "Open"      },
+        { "B",   "Exit"      },
+        { "SEL", "Layout"    },
+        { "X",   "History"   },
+        { "Y",   "Fetch Art" },
+        { "R1",  "Theme"     },
     };
     static const HintItem file_hints[] = {
         { "A",    "Play"    },
@@ -582,7 +583,7 @@ static void draw_hint_bar(SDL_Renderer *renderer, TTF_Font *font,
         { "MENU", "Exit"    },
     };
     const HintItem *items = (state->view == VIEW_FOLDERS) ? folder_hints : file_hints;
-    int item_count = (state->view == VIEW_FOLDERS) ? 5 : 6;
+    int item_count = (state->view == VIEW_FOLDERS) ? 6 : 6;
     hintbar_draw_row(renderer, font, font_small, items, item_count, t, win_w, win_h);
 }
 
@@ -720,6 +721,10 @@ int browser_handle_event(BrowserState *state, const MediaLibrary *lib,
         }
         if (key == SDLK_PAGEDOWN) {
             state->action = BROWSER_ACTION_THEME_CYCLE;
+            return 1;
+        }
+        if (key == SDLK_LALT && lib->folder_count > 0) {
+            state->action = BROWSER_ACTION_SCRAPE_COVERS;
             return 1;
         }
 

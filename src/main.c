@@ -1,5 +1,7 @@
 #include <stdio.h>
 #include <signal.h>
+#include <unistd.h>
+#include <fcntl.h>
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_ttf.h>
 #include <SDL2/SDL_image.h>
@@ -15,6 +17,8 @@
 #include "overlay.h"
 #ifdef GVU_A30
 #include "a30_screen.h"
+#include <spawn.h>
+#include <sys/wait.h>
 #endif
 
 #define FPS_CAP 60
@@ -221,6 +225,16 @@ int main(int argc, char *argv[]) {
 
     int          overlay_active = 0;
     SDL_Texture *help_cache     = NULL;   /* pre-rendered help overlay texture */
+
+#ifdef GVU_A30
+    /* Cover art scraping state */
+    int    scrape_confirm     = 0;   /* confirmation overlay active */
+    int    scrape_active      = 0;   /* scrape script running       */
+    pid_t  scrape_pid         = 0;
+    int    scrape_folder_idx  = -1;
+#define SCRAPE_DONE_FILE "/tmp/gvu_scrape_done"
+#define SCRAPE_LOG_FILE  "/tmp/gvu_scrape.log"
+#endif
     Uint32       menu_down_at   = 0;
     TutorialState tutorial      = { .active = !config_firstrun_done(), .slide = 0 };
 
@@ -334,6 +348,58 @@ int main(int argc, char *argv[]) {
             }
 
             if (mode == MODE_BROWSER) {
+#ifdef GVU_A30
+                /* Scrape confirmation: intercept A (confirm) and B (cancel) */
+                if (scrape_confirm && ev.type == SDL_KEYDOWN) {
+                    SDL_Keycode ck = ev.key.keysym.sym;
+                    if (ck == SDLK_SPACE) {
+                        /* A button — launch scrape script */
+                        scrape_confirm = 0;
+                        unlink(SCRAPE_DONE_FILE);
+                        /* Build argv: sh resources/scrape_covers.sh <path> [key] */
+                        const char *folder = lib.folders[scrape_folder_idx].path;
+                        const char *key    = config_tmdb_key();
+                        char *argv_buf[5];
+                        argv_buf[0] = "sh";
+                        argv_buf[1] = "resources/scrape_covers.sh";
+                        argv_buf[2] = (char *)folder;
+                        argv_buf[3] = (key && key[0]) ? (char *)key : NULL;
+                        argv_buf[4] = NULL;
+                        /* Redirect stdout/stderr to log file */
+                        int logfd = open(SCRAPE_LOG_FILE,
+                                         O_WRONLY | O_CREAT | O_TRUNC, 0644);
+                        posix_spawn_file_actions_t fa;
+                        posix_spawn_file_actions_init(&fa);
+                        if (logfd >= 0) {
+                            posix_spawn_file_actions_adddup2(&fa, logfd, STDOUT_FILENO);
+                            posix_spawn_file_actions_adddup2(&fa, logfd, STDERR_FILENO);
+                            posix_spawn_file_actions_addclose(&fa, logfd);
+                        }
+                        if (posix_spawn(&scrape_pid, "/bin/sh", &fa, NULL,
+                                        argv_buf, NULL) == 0) {
+                            scrape_active = 1;
+                            fprintf(stderr, "scrape: pid %d folder '%s'\n",
+                                    (int)scrape_pid, folder);
+                        } else {
+                            perror("posix_spawn scrape");
+                        }
+                        posix_spawn_file_actions_destroy(&fa);
+                        if (logfd >= 0) close(logfd);
+                    } else if (ck == SDLK_LCTRL || ck == SDLK_BACKSPACE) {
+                        scrape_confirm = 0;  /* B — cancel */
+                    }
+                    continue;
+                }
+                /* Scrape in progress: B cancels */
+                if (scrape_active && ev.type == SDL_KEYDOWN) {
+                    SDL_Keycode ck = ev.key.keysym.sym;
+                    if (ck == SDLK_LCTRL || ck == SDLK_BACKSPACE) {
+                        kill(scrape_pid, SIGTERM);
+                        scrape_active = 0;
+                    }
+                    continue;
+                }
+#endif
                 /* X button / Shift → open history page */
                 if (ev.type == SDL_KEYDOWN &&
                     ev.key.keysym.sym == SDLK_LSHIFT) {
@@ -387,6 +453,15 @@ int main(int argc, char *argv[]) {
                         }
                     }
                     state.action = BROWSER_ACTION_NONE;
+#ifdef GVU_A30
+                } else if (state.action == BROWSER_ACTION_SCRAPE_COVERS) {
+                    /* Y button — show confirmation overlay */
+                    if (!scrape_active && lib.folder_count > 0) {
+                        scrape_folder_idx = state.selected;
+                        scrape_confirm    = 1;
+                    }
+                    state.action = BROWSER_ACTION_NONE;
+#endif
                 }
 
             } else if (mode == MODE_HISTORY) {
@@ -525,7 +600,9 @@ int main(int argc, char *argv[]) {
                                 resume_save(player.path,
                                             audio_get_clock(&player.audio),
                                             player.probe.duration_sec);
+#ifdef GVU_A30
                                 wake_prev_frame = 0;   /* don't treat file-open time as sleep/wake */
+#endif
                                 player_close(&player);
                                 char errbuf[256] = {0};
                                 if (do_play(&player, fol->files[nidx].path, renderer,
@@ -556,7 +633,9 @@ int main(int argc, char *argv[]) {
                                 resume_save(player.path,
                                             audio_get_clock(&player.audio),
                                             player.probe.duration_sec);
+#ifdef GVU_A30
                                 wake_prev_frame = 0;   /* don't treat file-open time as sleep/wake */
+#endif
                                 player_close(&player);
                                 char errbuf[256] = {0};
                                 if (do_play(&player, fol->files[nidx].path, renderer,
@@ -650,6 +729,37 @@ int main(int argc, char *argv[]) {
             }
         }
 
+#ifdef GVU_A30
+        /* Poll for scrape completion via sentinel file */
+        if (scrape_active && access(SCRAPE_DONE_FILE, F_OK) == 0) {
+            scrape_active = 0;
+            unlink(SCRAPE_DONE_FILE);
+            fprintf(stderr, "scrape: done for folder %d\n", scrape_folder_idx);
+            /* Update lib cover pointer if cover.jpg now exists */
+            if (scrape_folder_idx >= 0 && scrape_folder_idx < lib.folder_count) {
+                MediaFolder *sf = &lib.folders[scrape_folder_idx];
+                char cp[1200];
+                snprintf(cp, sizeof(cp), "%s/cover.jpg", sf->path);
+                if (access(cp, F_OK) == 0) {
+                    free(sf->cover);
+                    sf->cover = strdup(cp);
+                }
+                /* Invalidate cached texture so it reloads on next draw */
+                if (scrape_folder_idx < cache.count &&
+                    cache.textures[scrape_folder_idx]) {
+                    SDL_DestroyTexture(cache.textures[scrape_folder_idx]);
+                    cache.textures[scrape_folder_idx] = NULL;
+                }
+                if (cache.backdrop_idx == scrape_folder_idx) {
+                    if (cache.backdrop) SDL_DestroyTexture(cache.backdrop);
+                    cache.backdrop     = NULL;
+                    cache.backdrop_idx = -1;
+                }
+            }
+            scrape_folder_idx = -1;
+        }
+#endif
+
         /* Render */
         if (mode == MODE_BROWSER || mode == MODE_RESUME_PROMPT) {
             browser_draw(renderer, font, font_small,
@@ -701,6 +811,130 @@ int main(int argc, char *argv[]) {
             error_draw(renderer, font, font_small, theme_get(), win_w, win_h,
                        error_path, error_msg);
         }
+#ifdef GVU_A30
+        /* Scrape confirmation overlay */
+        if (scrape_confirm && scrape_folder_idx >= 0 &&
+                scrape_folder_idx < lib.folder_count) {
+            const Theme *t = theme_get();
+            /* Dim background */
+            SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+            SDL_SetRenderDrawColor(renderer, 0, 0, 0, 160);
+            SDL_Rect full = { 0, 0, win_w, win_h };
+            SDL_RenderFillRect(renderer, &full);
+            /* Panel */
+            int pw = win_w * 3 / 4, ph = win_h * 2 / 5;
+            int px = (win_w - pw) / 2, py = (win_h - ph) / 2;
+            SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
+            SDL_SetRenderDrawColor(renderer, t->background.r, t->background.g,
+                                   t->background.b, 255);
+            SDL_Rect panel = { px, py, pw, ph };
+            SDL_RenderFillRect(renderer, &panel);
+            SDL_SetRenderDrawColor(renderer, t->highlight_bg.r,
+                                   t->highlight_bg.g, t->highlight_bg.b, 255);
+            SDL_RenderDrawRect(renderer, &panel);
+            /* Title */
+            SDL_Color tc = { t->text.r, t->text.g, t->text.b, 255 };
+            SDL_Surface *ts = TTF_RenderUTF8_Blended(font, "Fetch Cover Art?", tc);
+            if (ts) {
+                SDL_Texture *tt = SDL_CreateTextureFromSurface(renderer, ts);
+                if (tt) {
+                    SDL_Rect tr = { px + (pw - ts->w) / 2, py + ph / 6, ts->w, ts->h };
+                    SDL_RenderCopy(renderer, tt, NULL, &tr);
+                    SDL_DestroyTexture(tt);
+                }
+                SDL_FreeSurface(ts);
+            }
+            /* Folder name */
+            SDL_Color sc2 = { t->secondary.r, t->secondary.g, t->secondary.b, 255 };
+            const char *fn = lib.folders[scrape_folder_idx].name;
+            SDL_Surface *fs = TTF_RenderUTF8_Blended(font_small, fn, sc2);
+            if (fs) {
+                SDL_Texture *ft = SDL_CreateTextureFromSurface(renderer, fs);
+                if (ft) {
+                    int fw = fs->w < pw - 16 ? fs->w : pw - 16;
+                    SDL_Rect fr = { px + (pw - fw) / 2, py + ph * 2 / 5, fw, fs->h };
+                    SDL_RenderCopy(renderer, ft, NULL, &fr);
+                    SDL_DestroyTexture(ft);
+                }
+                SDL_FreeSurface(fs);
+            }
+            /* Attribution */
+            SDL_Surface *as = TTF_RenderUTF8_Blended(font_small,
+                "Sources: TMDB, TVMaze", sc2);
+            if (as) {
+                SDL_Texture *at = SDL_CreateTextureFromSurface(renderer, as);
+                if (at) {
+                    SDL_Rect ar = { px + (pw - as->w) / 2, py + ph * 3 / 5, as->w, as->h };
+                    SDL_RenderCopy(renderer, at, NULL, &ar);
+                    SDL_DestroyTexture(at);
+                }
+                SDL_FreeSurface(as);
+            }
+            /* Hint */
+            SDL_Color hc = { t->highlight_text.r, t->highlight_text.g,
+                             t->highlight_text.b, 255 };
+            SDL_Surface *hs = TTF_RenderUTF8_Blended(font_small, "A: Fetch   B: Cancel", hc);
+            if (hs) {
+                SDL_Texture *ht = SDL_CreateTextureFromSurface(renderer, hs);
+                if (ht) {
+                    SDL_Rect hr = { px + (pw - hs->w) / 2,
+                                    py + ph - hs->h - 8, hs->w, hs->h };
+                    SDL_RenderCopy(renderer, ht, NULL, &hr);
+                    SDL_DestroyTexture(ht);
+                }
+                SDL_FreeSurface(hs);
+            }
+        }
+        /* Scrape progress overlay */
+        if (scrape_active) {
+            const Theme *t = theme_get();
+            SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+            SDL_SetRenderDrawColor(renderer, 0, 0, 0, 160);
+            SDL_Rect full = { 0, 0, win_w, win_h };
+            SDL_RenderFillRect(renderer, &full);
+            /* Panel */
+            int pw = win_w * 3 / 4, ph = win_h / 5;
+            int px = (win_w - pw) / 2, py = (win_h - ph) / 2;
+            SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
+            SDL_SetRenderDrawColor(renderer, t->background.r, t->background.g,
+                                   t->background.b, 255);
+            SDL_Rect panel = { px, py, pw, ph };
+            SDL_RenderFillRect(renderer, &panel);
+            SDL_SetRenderDrawColor(renderer, t->highlight_bg.r,
+                                   t->highlight_bg.g, t->highlight_bg.b, 255);
+            SDL_RenderDrawRect(renderer, &panel);
+            /* Animated dots */
+            static int s_dot_frame = 0;
+            s_dot_frame = (s_dot_frame + 1) % 60;
+            int ndots = 1 + s_dot_frame / 20;
+            char msg[32];
+            snprintf(msg, sizeof(msg), "Fetching cover art%.*s", ndots, "...");
+            SDL_Color tc = { t->text.r, t->text.g, t->text.b, 255 };
+            SDL_Surface *ts = TTF_RenderUTF8_Blended(font, msg, tc);
+            if (ts) {
+                SDL_Texture *tt = SDL_CreateTextureFromSurface(renderer, ts);
+                if (tt) {
+                    SDL_Rect tr = { px + (pw - ts->w) / 2,
+                                    py + (ph - ts->h) / 2, ts->w, ts->h };
+                    SDL_RenderCopy(renderer, tt, NULL, &tr);
+                    SDL_DestroyTexture(tt);
+                }
+                SDL_FreeSurface(ts);
+            }
+            SDL_Color sc2 = { t->secondary.r, t->secondary.g, t->secondary.b, 255 };
+            SDL_Surface *cs = TTF_RenderUTF8_Blended(font_small, "B: Cancel", sc2);
+            if (cs) {
+                SDL_Texture *ct = SDL_CreateTextureFromSurface(renderer, cs);
+                if (ct) {
+                    SDL_Rect cr = { px + (pw - cs->w) / 2,
+                                    py + ph - cs->h - 4, cs->w, cs->h };
+                    SDL_RenderCopy(renderer, ct, NULL, &cr);
+                    SDL_DestroyTexture(ct);
+                }
+                SDL_FreeSurface(cs);
+            }
+        }
+#endif
 
         SDL_RenderPresent(renderer);
 #ifdef GVU_A30

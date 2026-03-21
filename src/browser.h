@@ -26,6 +26,7 @@ typedef enum {
     BROWSER_ACTION_QUIT,
     BROWSER_ACTION_THEME_CYCLE,  /* R1 pressed — caller should call theme_cycle()
                                     then re-render the default cover texture */
+    BROWSER_ACTION_SCRAPE_COVERS, /* Y pressed — caller shows confirm + runs scrape */
 } BrowserAction;
 
 /* -------------------------------------------------------------------------

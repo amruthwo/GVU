@@ -48,6 +48,10 @@ void config_save(const char *path);
 int  config_firstrun_done(void);
 void config_set_firstrun_done(void);
 
+/* TMDB API key (empty string if not set). */
+const char *config_tmdb_key(void);
+void        config_set_tmdb_key(const char *key);
+
 /* -------------------------------------------------------------------------
  * gvu.conf
  * ---------------------------------------------------------------------- */
