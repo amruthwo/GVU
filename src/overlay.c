@@ -2,6 +2,7 @@
 #include "hintbar.h"
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
 
 /* Scale base pixel value proportionally to the window width (base = 640 ref) */
 static inline int sc(int base, int w)  { return (int)(base * w / 640.0f + 0.5f); }
@@ -24,15 +25,77 @@ static void draw_dim(SDL_Renderer *r, int win_w, int win_h) {
     SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_NONE);
 }
 
+static void fill_rounded_rect(SDL_Renderer *r, int x, int y, int w, int h,
+                               int rad, Uint8 R, Uint8 G, Uint8 B, Uint8 A) {
+    if (A != 0xff) SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(r, R, G, B, A);
+    if (rad <= 0 || rad * 2 >= w || rad * 2 >= h) {
+        if (rad * 2 >= h) rad = h / 2;
+        if (rad <= 0) {
+            SDL_Rect rect = {x, y, w, h};
+            SDL_RenderFillRect(r, &rect);
+            if (A != 0xff) SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_NONE);
+            return;
+        }
+    }
+    SDL_Rect c = {x + rad, y, w - 2 * rad, h};
+    SDL_RenderFillRect(r, &c);
+    SDL_Rect left  = {x,           y + rad, rad, h - 2 * rad};
+    SDL_Rect right = {x + w - rad, y + rad, rad, h - 2 * rad};
+    SDL_RenderFillRect(r, &left);
+    SDL_RenderFillRect(r, &right);
+    for (int dy = 0; dy < rad; dy++) {
+        int dist = rad - dy;
+        int span = (int)sqrtf((float)(rad * rad - dist * dist));
+        SDL_RenderDrawLine(r, x + rad - span,     y + dy,         x + rad - 1,             y + dy);
+        SDL_RenderDrawLine(r, x + w - rad,         y + dy,         x + w - rad + span - 1,  y + dy);
+        SDL_RenderDrawLine(r, x + rad - span,     y + h - 1 - dy, x + rad - 1,             y + h - 1 - dy);
+        SDL_RenderDrawLine(r, x + w - rad,         y + h - 1 - dy, x + w - rad + span - 1,  y + h - 1 - dy);
+    }
+    if (A != 0xff) SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_NONE);
+}
+
+static void draw_rounded_outline(SDL_Renderer *r, int x, int y, int w, int h,
+                                  int rad, Uint8 R, Uint8 G, Uint8 B) {
+    SDL_SetRenderDrawColor(r, R, G, B, 0xff);
+    if (rad <= 0) {
+        SDL_Rect rect = {x, y, w, h};
+        SDL_RenderDrawRect(r, &rect);
+        return;
+    }
+    SDL_RenderDrawLine(r, x + rad,     y,         x + w - 1 - rad, y);
+    SDL_RenderDrawLine(r, x + rad,     y + h - 1, x + w - 1 - rad, y + h - 1);
+    SDL_RenderDrawLine(r, x,           y + rad,   x,               y + h - 1 - rad);
+    SDL_RenderDrawLine(r, x + w - 1,   y + rad,   x + w - 1,       y + h - 1 - rad);
+    int f = 1 - rad, dfx = 0, dfy = -2 * rad, px = 0, py = rad;
+    while (px <= py) {
+        SDL_RenderDrawPoint(r, x + rad - py,         y + rad - px);
+        SDL_RenderDrawPoint(r, x + rad - px,         y + rad - py);
+        SDL_RenderDrawPoint(r, x + w - 1 - rad + py, y + rad - px);
+        SDL_RenderDrawPoint(r, x + w - 1 - rad + px, y + rad - py);
+        SDL_RenderDrawPoint(r, x + rad - py,         y + h - 1 - rad + px);
+        SDL_RenderDrawPoint(r, x + rad - px,         y + h - 1 - rad + py);
+        SDL_RenderDrawPoint(r, x + w - 1 - rad + py, y + h - 1 - rad + px);
+        SDL_RenderDrawPoint(r, x + w - 1 - rad + px, y + h - 1 - rad + py);
+        px++; dfx += 2; f += dfx + 1;
+        if (f >= 0) { py--; dfy += 2; f += dfy; }
+    }
+}
+
 static void panel_bg(SDL_Renderer *r, int x, int y, int w, int h,
                      const Theme *theme) {
-    SDL_SetRenderDrawColor(r, theme->background.r, theme->background.g,
-                           theme->background.b, 255);
-    SDL_Rect rect = { x, y, w, h };
-    SDL_RenderFillRect(r, &rect);
-    SDL_SetRenderDrawColor(r, theme->highlight_bg.r, theme->highlight_bg.g,
-                           theme->highlight_bg.b, 255);
-    SDL_RenderDrawRect(r, &rect);
+    int rad = sc(12, w);
+    fill_rounded_rect(r, x, y, w, h, rad,
+                      theme->background.r, theme->background.g,
+                      theme->background.b, 0xff);
+    draw_rounded_outline(r, x, y, w, h, rad,
+                         theme->highlight_bg.r, theme->highlight_bg.g,
+                         theme->highlight_bg.b);
+}
+
+void overlay_panel(SDL_Renderer *r, int x, int y, int w, int h,
+                   const Theme *theme) {
+    panel_bg(r, x, y, w, h, theme);
 }
 
 static void divider(SDL_Renderer *r, int x, int y, int w, const Theme *theme) {

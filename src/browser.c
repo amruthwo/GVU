@@ -88,26 +88,55 @@ static Uint8 dim(Uint8 v, int amt) {
     return (v > amt) ? (Uint8)(v - amt) : 0;
 }
 
-/* Semi-transparent pill background — used to ensure text contrast over backdrops. */
+/* Filled rounded rectangle.  rad=0 degrades to a plain fill_rect.
+   If rad >= h/2 the ends become full semicircles (pill shape).
+   Blend mode is set by the caller before this call if A < 255. */
+static void fill_rounded_rect(SDL_Renderer *r, int x, int y, int w, int h,
+                               int rad, Uint8 R, Uint8 G, Uint8 B, Uint8 A) {
+    if (A != 0xff)
+        SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(r, R, G, B, A);
+
+    if (rad <= 0 || rad * 2 >= w || rad * 2 >= h) {
+        if (rad * 2 >= h) rad = h / 2;   /* pill clamp */
+        if (rad <= 0) {
+            SDL_Rect rect = {x, y, w, h};
+            SDL_RenderFillRect(r, &rect);
+            if (A != 0xff) SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_NONE);
+            return;
+        }
+    }
+
+    /* Centre vertical strip */
+    SDL_Rect c = {x + rad, y, w - 2 * rad, h};
+    SDL_RenderFillRect(r, &c);
+    /* Left and right strips (between the corner arcs) */
+    SDL_Rect left  = {x,         y + rad, rad, h - 2 * rad};
+    SDL_Rect right = {x + w - rad, y + rad, rad, h - 2 * rad};
+    SDL_RenderFillRect(r, &left);
+    SDL_RenderFillRect(r, &right);
+
+    /* Corner arcs: row-by-row horizontal spans */
+    for (int dy = 0; dy < rad; dy++) {
+        int dist = rad - dy;                          /* dist above/below arc center */
+        int span = (int)sqrtf((float)(rad * rad - dist * dist));
+        /* Top-left */
+        SDL_RenderDrawLine(r, x + rad - span, y + dy, x + rad - 1, y + dy);
+        /* Top-right */
+        SDL_RenderDrawLine(r, x + w - rad, y + dy, x + w - rad + span - 1, y + dy);
+        /* Bottom-left */
+        SDL_RenderDrawLine(r, x + rad - span, y + h - 1 - dy, x + rad - 1, y + h - 1 - dy);
+        /* Bottom-right */
+        SDL_RenderDrawLine(r, x + w - rad, y + h - 1 - dy, x + w - rad + span - 1, y + h - 1 - dy);
+    }
+
+    if (A != 0xff) SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_NONE);
+}
+
+/* Pill convenience wrapper (radius = half height) */
 static void fill_pill_bg(SDL_Renderer *r, int x, int y, int w, int h,
                          Uint8 R, Uint8 G, Uint8 B, Uint8 A) {
-    SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
-    SDL_SetRenderDrawColor(r, R, G, B, A);
-    int rad = h / 2;
-    /* Centre rect */
-    if (w > 2 * rad) {
-        SDL_Rect rect = { x + rad, y, w - 2 * rad, h };
-        SDL_RenderFillRect(r, &rect);
-    }
-    /* Left and right semicircle caps */
-    for (int dy = -rad; dy <= rad; dy++) {
-        int dx = (int)sqrtf((float)(rad * rad - dy * dy));
-        SDL_RenderDrawLine(r, x + rad - dx, y + rad + dy,
-                              x + rad,      y + rad + dy);
-        SDL_RenderDrawLine(r, x + w - rad,      y + rad + dy,
-                              x + w - rad + dx, y + rad + dy);
-    }
-    SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_NONE);
+    fill_rounded_rect(r, x, y, w, h, h / 2, R, G, B, A);
 }
 
 /* -------------------------------------------------------------------------
@@ -316,12 +345,13 @@ static void draw_folder_grid(SDL_Renderer *renderer, TTF_Font *font,
         int y   = m.padding + row * (m.tile_h + m.padding);
         int sel = (i == state->selected);
 
+        int rad = sc(10, win_w);
         if (state->layout == LAYOUT_LIST) {
             /* Alternating row tint */
             if (sel) {
-                fill_rect(renderer, x, y, m.tile_w, m.tile_h,
-                          t->highlight_bg.r, t->highlight_bg.g,
-                          t->highlight_bg.b, 0xff);
+                fill_rounded_rect(renderer, x, y, m.tile_w, m.tile_h, rad,
+                                  t->highlight_bg.r, t->highlight_bg.g,
+                                  t->highlight_bg.b, 0xff);
             } else if (i % 2 == 0) {
                 fill_rect(renderer, x, y, m.tile_w, m.tile_h,
                           dim(t->background.r, 8),
@@ -355,13 +385,11 @@ static void draw_folder_grid(SDL_Renderer *renderer, TTF_Font *font,
                       tc.r, tc.g, tc.b);
 
         } else {
-            /* Grid tile — soft semi-transparent highlight border */
+            /* Grid tile — rounded highlight glow behind tile */
             if (sel) {
-                SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
-                fill_rect(renderer, x - 2, y - 2, m.tile_w + 4, m.tile_h + 4,
-                          t->highlight_bg.r, t->highlight_bg.g,
-                          t->highlight_bg.b, 170);
-                SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
+                fill_rounded_rect(renderer, x - 2, y - 2, m.tile_w + 4, m.tile_h + 4, rad + 2,
+                                  t->highlight_bg.r, t->highlight_bg.g,
+                                  t->highlight_bg.b, 170);
             }
 
             /* Cover image — fit within tile, preserve aspect ratio */
@@ -380,16 +408,16 @@ static void draw_folder_grid(SDL_Renderer *renderer, TTF_Font *font,
                                  y + (m.img_h  - dh) / 2, dw, dh };
                 SDL_RenderCopy(renderer, cover, NULL, &dst);
             } else {
-                fill_rect(renderer, x, y, m.tile_w, m.img_h,
-                          t->secondary.r, t->secondary.g, t->secondary.b, 0xff);
+                fill_rounded_rect(renderer, x, y, m.tile_w, m.img_h, rad,
+                                  t->secondary.r, t->secondary.g, t->secondary.b, 0xff);
             }
 
-            /* Name strip */
+            /* Name strip — rounded bottom corners */
             RGB strip = sel ? t->highlight_bg : (RGB){ dim(t->background.r, 10),
                                                         dim(t->background.g, 10),
                                                         dim(t->background.b, 10) };
-            fill_rect(renderer, x, y + m.img_h, m.tile_w, m.name_h,
-                      strip.r, strip.g, strip.b, 0xff);
+            fill_rounded_rect(renderer, x, y + m.img_h, m.tile_w, m.name_h, rad,
+                              strip.r, strip.g, strip.b, 0xff);
 
             RGB tc = sel ? t->highlight_text : t->text;
             {
@@ -537,11 +565,12 @@ static void draw_file_list(SDL_Renderer *renderer, TTF_Font *font,
         int y   = row * row_h;
         int sel = (i == state->selected);
 
+        int row_rad = sc(10, win_w);
         if (has_backdrop) {
             SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
             if (sel) {
-                fill_rect(renderer, padding, y, win_w - padding * 2, row_h,
-                          t->highlight_bg.r, t->highlight_bg.g, t->highlight_bg.b, 200);
+                fill_rounded_rect(renderer, padding, y, win_w - padding * 2, row_h, row_rad,
+                                  t->highlight_bg.r, t->highlight_bg.g, t->highlight_bg.b, 200);
             } else if (row % 2 == 0) {
                 fill_rect(renderer, padding, y, win_w - padding * 2, row_h,
                           0, 0, 0, 40);
@@ -549,8 +578,8 @@ static void draw_file_list(SDL_Renderer *renderer, TTF_Font *font,
             SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
         } else {
             if (sel) {
-                fill_rect(renderer, padding, y, win_w - padding * 2, row_h,
-                          t->highlight_bg.r, t->highlight_bg.g, t->highlight_bg.b, 0xff);
+                fill_rounded_rect(renderer, padding, y, win_w - padding * 2, row_h, row_rad,
+                                  t->highlight_bg.r, t->highlight_bg.g, t->highlight_bg.b, 0xff);
             } else if (row % 2 == 0) {
                 fill_rect(renderer, padding, y, win_w - padding * 2, row_h,
                           dim(t->background.r, 8),
@@ -600,22 +629,33 @@ static void draw_file_list(SDL_Renderer *renderer, TTF_Font *font,
         }
     }
 
-    /* Folder name header at bottom */
+    /* Folder name header at bottom — pill label */
     int header_y = win_h - hint_bar_h - row_h;
-    if (has_backdrop) {
-        SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
-        fill_rect(renderer, 0, header_y, win_w, row_h, 0, 0, 0, 170);
-        SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
-    } else {
-        fill_rect(renderer, 0, header_y, win_w, row_h,
-                  dim(t->background.r, 15),
-                  dim(t->background.g, 15),
-                  dim(t->background.b, 15), 0xff);
+    {
+        int fh = TTF_FontHeight(font);
+        int pill_pad = sc(14, win_w);
+        int pill_h = fh + sc(10, win_w);
+        int pill_w, name_w = 0, dummy = 0;
+        TTF_SizeUTF8(font, display_name, &name_w, &dummy);
+        pill_w = name_w + pill_pad * 2;
+        if (pill_w > win_w - padding * 2) pill_w = win_w - padding * 2;
+        int pill_x = (win_w - pill_w) / 2;
+        int pill_y = header_y + (row_h - pill_h) / 2;
+        Uint8 bg_r, bg_g, bg_b, bg_a;
+        if (has_backdrop) {
+            bg_r = 0; bg_g = 0; bg_b = 0; bg_a = 180;
+        } else {
+            bg_r = dim(t->background.r, 15);
+            bg_g = dim(t->background.g, 15);
+            bg_b = dim(t->background.b, 15);
+            bg_a = 0xff;
+        }
+        fill_pill_bg(renderer, pill_x, pill_y, pill_w, pill_h, bg_r, bg_g, bg_b, bg_a);
+        draw_text(renderer, font, display_name,
+                  pill_x + pill_pad, pill_y + (pill_h - fh) / 2,
+                  pill_w - pill_pad * 2,
+                  t->secondary.r, t->secondary.g, t->secondary.b);
     }
-    draw_text(renderer, font, display_name,
-              padding, header_y + (row_h - TTF_FontHeight(font)) / 2,
-              win_w - padding * 2,
-              t->secondary.r, t->secondary.g, t->secondary.b);
 }
 
 /* -------------------------------------------------------------------------
@@ -740,12 +780,11 @@ static void draw_season_list(SDL_Renderer *renderer, TTF_Font *font,
             int y   = m.padding + row * (m.tile_h + m.padding);
             int sel = (i == state->season_idx);
 
+            int srad = sc(10, win_w);
             if (sel) {
-                SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
-                fill_rect(renderer, x - 2, y - 2, m.tile_w + 4, m.tile_h + 4,
-                          t->highlight_bg.r, t->highlight_bg.g,
-                          t->highlight_bg.b, 170);
-                SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
+                fill_rounded_rect(renderer, x - 2, y - 2, m.tile_w + 4, m.tile_h + 4, srad + 2,
+                                  t->highlight_bg.r, t->highlight_bg.g,
+                                  t->highlight_bg.b, 170);
             }
 
             SDL_Texture *thumb = (cache->season_textures && i < cache->season_tex_count)
@@ -765,16 +804,16 @@ static void draw_season_list(SDL_Renderer *renderer, TTF_Font *font,
                                  y + (m.img_h  - dh) / 2, dw, dh };
                 SDL_RenderCopy(renderer, thumb, NULL, &dst);
             } else {
-                fill_rect(renderer, x, y, m.tile_w, m.img_h,
-                          t->secondary.r, t->secondary.g, t->secondary.b, 0xff);
+                fill_rounded_rect(renderer, x, y, m.tile_w, m.img_h, srad,
+                                  t->secondary.r, t->secondary.g, t->secondary.b, 0xff);
             }
 
-            /* Name strip */
+            /* Name strip — rounded bottom corners */
             RGB strip = sel ? t->highlight_bg : (RGB){ dim(t->background.r, 10),
                                                         dim(t->background.g, 10),
                                                         dim(t->background.b, 10) };
-            fill_rect(renderer, x, y + m.img_h, m.tile_w, m.name_h,
-                      strip.r, strip.g, strip.b, 0xff);
+            fill_rounded_rect(renderer, x, y + m.img_h, m.tile_w, m.name_h, srad,
+                              strip.r, strip.g, strip.b, 0xff);
 
             RGB tc = sel ? t->highlight_text : t->text;
             {
@@ -789,22 +828,34 @@ static void draw_season_list(SDL_Renderer *renderer, TTF_Font *font,
         }
     }
 
-    /* Show name header at bottom (common to all layouts) */
+    /* Show name header at bottom — pill label */
     int header_y = win_h - hint_bar_h - header_h;
-    if (has_backdrop) {
-        SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
-        fill_rect(renderer, 0, header_y, win_w, header_h, 0, 0, 0, 170);
-        SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
-    } else {
-        fill_rect(renderer, 0, header_y, win_w, header_h,
-                  dim(t->background.r, 15), dim(t->background.g, 15),
-                  dim(t->background.b, 15), 0xff);
-    }
     int padding = sc(8, win_w);
-    draw_text(renderer, font, show->name,
-              padding, header_y + (header_h - TTF_FontHeight(font)) / 2,
-              win_w - padding * 2,
-              t->secondary.r, t->secondary.g, t->secondary.b);
+    {
+        int fh = TTF_FontHeight(font);
+        int pill_pad = sc(14, win_w);
+        int pill_h = fh + sc(10, win_w);
+        int pill_w, name_w = 0, dummy = 0;
+        TTF_SizeUTF8(font, show->name, &name_w, &dummy);
+        pill_w = name_w + pill_pad * 2;
+        if (pill_w > win_w - padding * 2) pill_w = win_w - padding * 2;
+        int pill_x = (win_w - pill_w) / 2;
+        int pill_y = header_y + (header_h - pill_h) / 2;
+        Uint8 bg_r, bg_g, bg_b, bg_a;
+        if (has_backdrop) {
+            bg_r = 0; bg_g = 0; bg_b = 0; bg_a = 180;
+        } else {
+            bg_r = dim(t->background.r, 15);
+            bg_g = dim(t->background.g, 15);
+            bg_b = dim(t->background.b, 15);
+            bg_a = 0xff;
+        }
+        fill_pill_bg(renderer, pill_x, pill_y, pill_w, pill_h, bg_r, bg_g, bg_b, bg_a);
+        draw_text(renderer, font, show->name,
+                  pill_x + pill_pad, pill_y + (pill_h - fh) / 2,
+                  pill_w - pill_pad * 2,
+                  t->secondary.r, t->secondary.g, t->secondary.b);
+    }
 }
 
 /* -------------------------------------------------------------------------
@@ -914,16 +965,9 @@ void browser_draw(SDL_Renderer *renderer, TTF_Font *font, TTF_Font *font_small,
             int toast_x = (win_w - toast_w) / 2;
             int toast_y = win_h - hint_h - sc(6, win_w) - toast_h;
 
-            SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
-            SDL_SetRenderDrawColor(renderer, 0, 0, 0, 210);
-            SDL_Rect bg = { toast_x, toast_y, toast_w, toast_h };
-            SDL_RenderFillRect(renderer, &bg);
-            /* Highlight border */
-            SDL_SetRenderDrawColor(renderer,
-                                   theme->highlight_bg.r,
-                                   theme->highlight_bg.g,
-                                   theme->highlight_bg.b, 180);
-            SDL_RenderDrawRect(renderer, &bg);
+            int toast_rad = sc(12, win_w);
+            fill_rounded_rect(renderer, toast_x, toast_y, toast_w, toast_h, toast_rad,
+                              0, 0, 0, 210);
             SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
 
             int glyph_h = TTF_FontHeight(font_small)

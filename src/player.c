@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdatomic.h>
+#include <math.h>
 #include <libavformat/avformat.h>
 #include <libavutil/dict.h>
 
@@ -333,6 +334,36 @@ static void fill_rect(SDL_Renderer *r, int x, int y, int w, int h,
     SDL_RenderFillRect(r, &rect);
 }
 
+static void fill_rounded_rect(SDL_Renderer *r, int x, int y, int w, int h,
+                               int rad, Uint8 R, Uint8 G, Uint8 B, Uint8 A) {
+    if (A != 0xff) SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(r, R, G, B, A);
+    if (rad <= 0 || rad * 2 >= w || rad * 2 >= h) {
+        if (rad * 2 >= h) rad = h / 2;
+        if (rad <= 0) {
+            SDL_Rect rect = {x, y, w, h};
+            SDL_RenderFillRect(r, &rect);
+            if (A != 0xff) SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_NONE);
+            return;
+        }
+    }
+    SDL_Rect c = {x + rad, y, w - 2 * rad, h};
+    SDL_RenderFillRect(r, &c);
+    SDL_Rect left  = {x,         y + rad, rad, h - 2 * rad};
+    SDL_Rect right = {x + w - rad, y + rad, rad, h - 2 * rad};
+    SDL_RenderFillRect(r, &left);
+    SDL_RenderFillRect(r, &right);
+    for (int dy = 0; dy < rad; dy++) {
+        int dist = rad - dy;
+        int span = (int)sqrtf((float)(rad * rad - dist * dist));
+        SDL_RenderDrawLine(r, x + rad - span, y + dy,         x + rad - 1,         y + dy);
+        SDL_RenderDrawLine(r, x + w - rad,    y + dy,         x + w - rad + span - 1, y + dy);
+        SDL_RenderDrawLine(r, x + rad - span, y + h - 1 - dy, x + rad - 1,         y + h - 1 - dy);
+        SDL_RenderDrawLine(r, x + w - rad,    y + h - 1 - dy, x + w - rad + span - 1, y + h - 1 - dy);
+    }
+    if (A != 0xff) SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_NONE);
+}
+
 static void draw_text(SDL_Renderer *r, TTF_Font *font, const char *text,
                       int x, int y, int max_w, Uint8 R, Uint8 G, Uint8 B) {
     SDL_Color col = { R, G, B, 255 };
@@ -572,6 +603,7 @@ void player_draw(SDL_Renderer *r, TTF_Font *font, TTF_Font *font_small,
         int row_h = lh + pad * 2 + sc(4, win_w);
         int sbar_h = statusbar_height(win_w);
 
+        int toast_rad = sc(12, win_w);
         if (p->zoom_osd_visible) {
             static const char *zoom_names[] = { "Zoom: Fit", "Zoom: Wide", "Zoom: Fill" };
             const char *label = zoom_names[p->zoom_mode];
@@ -579,11 +611,8 @@ void player_draw(SDL_Renderer *r, TTF_Font *font, TTF_Font *font_small,
             TTF_SizeUTF8(font, label, &lw, &dummy);
             int bx = (win_w - lw) / 2 - pad;
             int by = sbar_h + pad * 2 + osd_row * row_h;
-            SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
-            SDL_SetRenderDrawColor(r, 0, 0, 0, 180);
-            SDL_Rect bg = { bx, by, lw + pad * 2, lh + pad * 2 };
-            SDL_RenderFillRect(r, &bg);
-            SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_NONE);
+            fill_rounded_rect(r, bx, by, lw + pad * 2, lh + pad * 2, toast_rad,
+                              0, 0, 0, 180);
             draw_text(r, font, label, bx + pad, by + pad, lw,
                       t->highlight_text.r, t->highlight_text.g, t->highlight_text.b);
             osd_row++;
@@ -594,11 +623,8 @@ void player_draw(SDL_Renderer *r, TTF_Font *font, TTF_Font *font_small,
             TTF_SizeUTF8(font, p->audio_osd_label, &lw, &dummy);
             int bx = (win_w - lw) / 2 - pad;
             int by = sbar_h + pad * 2 + osd_row * row_h;
-            SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
-            SDL_SetRenderDrawColor(r, 0, 0, 0, 180);
-            SDL_Rect bg = { bx, by, lw + pad * 2, lh + pad * 2 };
-            SDL_RenderFillRect(r, &bg);
-            SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_NONE);
+            fill_rounded_rect(r, bx, by, lw + pad * 2, lh + pad * 2, toast_rad,
+                              0, 0, 0, 180);
             draw_text(r, font, p->audio_osd_label, bx + pad, by + pad, lw,
                       t->highlight_text.r, t->highlight_text.g, t->highlight_text.b);
         }
