@@ -88,6 +88,8 @@ const int THEME_COUNT = (int)(sizeof(THEMES) / sizeof(THEMES[0]));
 static int  g_theme_idx     = 0;  /* default: SPRUCE */
 static int  g_firstrun_done = 0;
 static char g_tmdb_key[128] = "";
+static int  g_layout        = 0;  /* 0=LARGE, 1=SMALL, 2=LIST */
+static int  g_season_layout = 0;
 
 const Theme *theme_get(void) {
     return &THEMES[g_theme_idx];
@@ -106,6 +108,11 @@ void config_set_tmdb_key(const char *key) {
     g_tmdb_key[sizeof(g_tmdb_key) - 1] = '\0';
 }
 
+int  config_get_layout(void)        { return g_layout; }
+void config_set_layout(int l)       { g_layout = l; }
+int  config_get_season_layout(void) { return g_season_layout; }
+void config_set_season_layout(int l){ g_season_layout = l; }
+
 void config_save(const char *path) {
     FILE *f = fopen(path, "w");
     if (!f) return;
@@ -113,6 +120,8 @@ void config_save(const char *path) {
     fprintf(f, "firstrun_done = %d\n", g_firstrun_done);
     if (g_tmdb_key[0])
         fprintf(f, "tmdb_key = %s\n", g_tmdb_key);
+    fprintf(f, "layout = %d\n", g_layout);
+    fprintf(f, "season_layout = %d\n", g_season_layout);
     fclose(f);
 }
 
@@ -162,6 +171,12 @@ void config_load(const char *path) {
         } else if (strcasecmp(key, "tmdb_key") == 0) {
             strncpy(g_tmdb_key, val, sizeof(g_tmdb_key) - 1);
             g_tmdb_key[sizeof(g_tmdb_key) - 1] = '\0';
+        } else if (strcasecmp(key, "layout") == 0) {
+            int v = atoi(val);
+            if (v >= 0 && v <= 2) g_layout = v;
+        } else if (strcasecmp(key, "season_layout") == 0) {
+            int v = atoi(val);
+            if (v >= 0 && v <= 2) g_season_layout = v;
         }
     }
     fclose(f);

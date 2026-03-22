@@ -211,6 +211,9 @@ int main(int argc, char *argv[]) {
     BrowserState state;
     CoverCache   cache;
     browser_init(&state, &cache, &lib);
+    /* Restore saved layout preferences */
+    state.layout        = (BrowserLayout)config_get_layout();
+    state.season_layout = (BrowserLayout)config_get_season_layout();
 
     HistoryState history;
     memset(&history, 0, sizeof(history));
@@ -255,6 +258,10 @@ int main(int argc, char *argv[]) {
     int    scrape_active      = 0;   /* scrape script running       */
     pid_t  scrape_pid         = 0;
     int    scrape_folder_idx  = -1;
+    /* Season cover polling — watch for new cover.jpg files after scrape "ok" */
+    int    scrape_watch_folder = -1;  /* folder being watched, -1 = inactive */
+    Uint32 scrape_watch_until  = 0;   /* stop watching after this SDL tick    */
+    Uint32 scrape_watch_last   = 0;   /* last time we checked (for 1s rate)   */
 #define SCRAPE_DONE_FILE "/tmp/gvu_scrape_done"
 #define SCRAPE_LOG_FILE  "/tmp/gvu_scrape.log"
 #endif
@@ -478,6 +485,11 @@ int main(int argc, char *argv[]) {
                     }
                     state.action = BROWSER_ACTION_NONE;
 #ifdef GVU_A30
+                } else if (state.action == BROWSER_ACTION_LAYOUT_CHANGED) {
+                    config_set_layout((int)state.layout);
+                    config_set_season_layout((int)state.season_layout);
+                    config_save("gvu.conf");
+                    state.action = BROWSER_ACTION_NONE;
                 } else if (state.action == BROWSER_ACTION_SCRAPE_COVERS) {
                     /* Y button — show confirmation overlay */
                     if (!scrape_active && lib.folder_count > 0) {
@@ -822,8 +834,54 @@ int main(int argc, char *argv[]) {
                     cache.backdrop     = NULL;
                     cache.backdrop_idx = -1;
                 }
+                /* Invalidate season texture cache and start polling for
+                   season covers (script writes "ok" before scraping seasons) */
+                if (cache.season_tex_folder_idx == scrape_folder_idx) {
+                    for (int si = 0; si < cache.season_tex_count; si++)
+                        if (cache.season_textures[si])
+                            SDL_DestroyTexture(cache.season_textures[si]);
+                    free(cache.season_textures);
+                    cache.season_textures    = NULL;
+                    cache.season_tex_count   = 0;
+                    cache.season_tex_folder_idx = -1;
+                }
+                scrape_watch_folder = scrape_folder_idx;
+                scrape_watch_until  = SDL_GetTicks() + 60000; /* watch 60 s */
+                scrape_watch_last   = 0;
             }
             scrape_folder_idx = -1;
+        }
+
+        /* Poll for new season cover.jpg files after scrape (once per second) */
+        if (scrape_watch_folder >= 0) {
+            Uint32 now_w = SDL_GetTicks();
+            if (now_w >= scrape_watch_until) {
+                scrape_watch_folder = -1;  /* window expired */
+            } else if (now_w - scrape_watch_last >= 1000) {
+                scrape_watch_last = now_w;
+                MediaFolder *wf = &lib.folders[scrape_watch_folder];
+                int changed = 0;
+                for (int si = 0; si < wf->season_count; si++) {
+                    Season *s = &wf->seasons[si];
+                    if (!s->cover) {
+                        char scp[1200];
+                        snprintf(scp, sizeof(scp), "%s/cover.jpg", s->path);
+                        if (access(scp, F_OK) == 0) {
+                            s->cover = strdup(scp);
+                            changed  = 1;
+                        }
+                    }
+                }
+                if (changed && cache.season_tex_folder_idx == scrape_watch_folder) {
+                    for (int si = 0; si < cache.season_tex_count; si++)
+                        if (cache.season_textures[si])
+                            SDL_DestroyTexture(cache.season_textures[si]);
+                    free(cache.season_textures);
+                    cache.season_textures       = NULL;
+                    cache.season_tex_count      = 0;
+                    cache.season_tex_folder_idx = -1;
+                }
+            }
         }
 #endif
 

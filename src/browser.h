@@ -27,7 +27,8 @@ typedef enum {
     BROWSER_ACTION_QUIT,
     BROWSER_ACTION_THEME_CYCLE,  /* R1 pressed — caller should call theme_cycle()
                                     then re-render the default cover texture */
-    BROWSER_ACTION_SCRAPE_COVERS, /* Y pressed — caller shows confirm + runs scrape */
+    BROWSER_ACTION_SCRAPE_COVERS,  /* Y pressed — caller shows confirm + runs scrape */
+    BROWSER_ACTION_LAYOUT_CHANGED, /* SEL pressed — caller should persist layout pref  */
 } BrowserAction;
 
 /* -------------------------------------------------------------------------
@@ -36,7 +37,8 @@ typedef enum {
 
 typedef struct {
     BrowserView   view;
-    BrowserLayout layout;
+    BrowserLayout layout;         /* VIEW_FOLDERS layout */
+    BrowserLayout season_layout;  /* VIEW_SEASONS layout (independent) */
     int           selected;     /* highlighted index in current view         */
     int           scroll_row;   /* first visible row (grid) or item (list)   */
     int           folder_idx;   /* which folder is open (VIEW_SEASONS/FILES) */
