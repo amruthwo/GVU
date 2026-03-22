@@ -1,5 +1,6 @@
 #include "player.h"
 #include "hintbar.h"
+#include "statusbar.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdatomic.h>
@@ -485,14 +486,14 @@ static void draw_volume_bar(SDL_Renderer *r, TTF_Font *font,
     draw_indicator_bar(r, font, t,
                        p->muted ? "MUTE" : "VOL",
                        p->muted ? 0.0f : p->volume,
-                       box_x, pad * 2, win_w);
+                       box_x, statusbar_height(win_w) + pad, win_w);
 }
 
 static void draw_brightness_bar(SDL_Renderer *r, TTF_Font *font,
                                 const Player *p, const Theme *t, int win_w) {
     /* Anchored to top-left */
     int pad = sc(8, win_w);
-    draw_indicator_bar(r, font, t, "BRI", p->brightness, pad * 2, pad * 2, win_w);
+    draw_indicator_bar(r, font, t, "BRI", p->brightness, pad * 2, statusbar_height(win_w) + pad, win_w);
 }
 
 void player_draw(SDL_Renderer *r, TTF_Font *font, TTF_Font *font_small,

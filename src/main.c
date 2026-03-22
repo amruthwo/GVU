@@ -15,6 +15,7 @@
 #include "player.h"
 #include "resume.h"
 #include "overlay.h"
+#include "statusbar.h"
 #ifdef GVU_A30
 #include "a30_screen.h"
 #include <spawn.h>
@@ -886,19 +887,31 @@ int main(int argc, char *argv[]) {
 #endif
 
         /* Render */
-        if (mode == MODE_BROWSER || mode == MODE_RESUME_PROMPT) {
-            browser_draw(renderer, font, font_small,
-                         &state, &cache, &lib, default_cover,
-                         theme_get(), win_w, win_h);
-        } else if (mode == MODE_HISTORY) {
-            history_draw(renderer, font, font_small, &history,
-                         theme_get(), win_w, win_h);
-        } else if (mode == MODE_UPNEXT) {
-            browser_draw(renderer, font, font_small,
-                         &state, &cache, &lib, default_cover,
-                         theme_get(), win_w, win_h);
+        int sbar_h = statusbar_height(win_w);
+        if (mode == MODE_BROWSER || mode == MODE_RESUME_PROMPT ||
+            mode == MODE_HISTORY  || mode == MODE_UPNEXT) {
+
+            /* Browser/history modes: push content below the status bar */
+            SDL_Rect content_vp = {0, sbar_h, win_w, win_h - sbar_h};
+            SDL_RenderSetViewport(renderer, &content_vp);
+
+            if (mode == MODE_HISTORY) {
+                history_draw(renderer, font, font_small, &history,
+                             theme_get(), win_w, win_h - sbar_h);
+            } else {
+                browser_draw(renderer, font, font_small,
+                             &state, &cache, &lib, default_cover,
+                             theme_get(), win_w, win_h - sbar_h);
+            }
+
+            SDL_RenderSetViewport(renderer, NULL);
+            statusbar_draw(renderer, font, theme_get(), win_w, win_h);
+
         } else {
+            /* Playback mode: full-screen, status bar only when OSD is visible */
             player_draw(renderer, font, font_small, &player, theme_get(), win_w, win_h);
+            if (player.osd_visible)
+                statusbar_draw(renderer, font, theme_get(), win_w, win_h);
         }
 
         /* Overlay layers */

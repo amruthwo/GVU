@@ -19,7 +19,8 @@ SRCS    = $(SRC_DIR)/main.c \
           $(SRC_DIR)/audio.c \
           $(SRC_DIR)/video.c \
           $(SRC_DIR)/player.c \
-          $(SRC_DIR)/resume.c
+          $(SRC_DIR)/resume.c \
+          $(SRC_DIR)/statusbar.c
 TARGET  = gvu
 
 # -------------------------------------------------------------------------
@@ -92,8 +93,9 @@ miyoo-a30-deploy: build/gvu32
 	    $(GVU_A30_DEPLOY):$(GVU_A30_PATH)/resources/fonts/
 	scp resources/default_cover.png \
 	    resources/scrape_covers.sh \
+	    resources/clear_covers.sh \
 	    $(GVU_A30_DEPLOY):$(GVU_A30_PATH)/resources/
-	ssh $(GVU_A30_DEPLOY) "chmod +x $(GVU_A30_PATH)/launch.sh $(GVU_A30_PATH)/gvu32 $(GVU_A30_PATH)/resources/scrape_covers.sh"
+	ssh $(GVU_A30_DEPLOY) "chmod +x $(GVU_A30_PATH)/launch.sh $(GVU_A30_PATH)/gvu32 $(GVU_A30_PATH)/resources/scrape_covers.sh $(GVU_A30_PATH)/resources/clear_covers.sh"
 	@echo "Deployed to $(GVU_A30_DEPLOY):$(GVU_A30_PATH)"
 
 clean:
