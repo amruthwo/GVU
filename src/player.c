@@ -570,6 +570,7 @@ void player_draw(SDL_Renderer *r, TTF_Font *font, TTF_Font *font_small,
         int lh = TTF_FontHeight(font);
         int pad   = sc(8, win_w);
         int row_h = lh + pad * 2 + sc(4, win_w);
+        int sbar_h = statusbar_height(win_w);
 
         if (p->zoom_osd_visible) {
             static const char *zoom_names[] = { "Zoom: Fit", "Zoom: Wide", "Zoom: Fill" };
@@ -577,7 +578,7 @@ void player_draw(SDL_Renderer *r, TTF_Font *font, TTF_Font *font_small,
             int lw = 0, dummy = 0;
             TTF_SizeUTF8(font, label, &lw, &dummy);
             int bx = (win_w - lw) / 2 - pad;
-            int by = pad * 2 + osd_row * row_h;
+            int by = sbar_h + pad * 2 + osd_row * row_h;
             SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
             SDL_SetRenderDrawColor(r, 0, 0, 0, 180);
             SDL_Rect bg = { bx, by, lw + pad * 2, lh + pad * 2 };
@@ -592,7 +593,7 @@ void player_draw(SDL_Renderer *r, TTF_Font *font, TTF_Font *font_small,
             int lw = 0, dummy = 0;
             TTF_SizeUTF8(font, p->audio_osd_label, &lw, &dummy);
             int bx = (win_w - lw) / 2 - pad;
-            int by = pad * 2 + osd_row * row_h;
+            int by = sbar_h + pad * 2 + osd_row * row_h;
             SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
             SDL_SetRenderDrawColor(r, 0, 0, 0, 180);
             SDL_Rect bg = { bx, by, lw + pad * 2, lh + pad * 2 };
