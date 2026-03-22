@@ -20,7 +20,8 @@ SRCS    = $(SRC_DIR)/main.c \
           $(SRC_DIR)/video.c \
           $(SRC_DIR)/player.c \
           $(SRC_DIR)/resume.c \
-          $(SRC_DIR)/statusbar.c
+          $(SRC_DIR)/statusbar.c \
+          $(SRC_DIR)/subtitle.c
 TARGET  = gvu
 
 # -------------------------------------------------------------------------

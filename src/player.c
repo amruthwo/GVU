@@ -7,6 +7,7 @@
 #include <math.h>
 #include <libavformat/avformat.h>
 #include <libavutil/dict.h>
+#include "subtitle.h"
 
 #define AV_SYNC_THRESHOLD_SEC  0.040   /* 40ms — within one frame at 25fps */
 #define AV_NOSYNC_THRESHOLD_SEC 10.0   /* drop frames further than 10s behind */
@@ -65,6 +66,8 @@ int player_open(Player *p, const char *path, SDL_Renderer *renderer,
     p->state      = PLAYER_STOPPED;
     p->volume     = 1.0f;
     p->brightness = 1.0f;
+
+    sub_load(&p->subtitle, path);
     return 0;
 }
 
@@ -185,6 +188,18 @@ void player_zoom_cycle(Player *p) {
     p->zoom_osd_hide_at = SDL_GetTicks() + 1500;
 }
 
+void player_toggle_subs(Player *p) {
+    if (p->subtitle.count == 0) {
+        snprintf(p->sub_osd_label, sizeof(p->sub_osd_label), "No subtitles");
+    } else {
+        sub_toggle(&p->subtitle);
+        snprintf(p->sub_osd_label, sizeof(p->sub_osd_label),
+                 "Subtitles %s", p->subtitle.enabled ? "ON" : "OFF");
+    }
+    p->sub_osd_visible = 1;
+    p->sub_osd_hide_at = SDL_GetTicks() + 1500;
+}
+
 void player_seek(Player *p, double delta_sec) {
     if (p->state == PLAYER_STOPPED) return;
     double current = audio_get_clock(&p->audio);
@@ -230,6 +245,7 @@ void player_close(Player *p) {
     demux_close(&p->demux);
 
     if (p->video_tex) { SDL_DestroyTexture(p->video_tex); p->video_tex = NULL; }
+    sub_free(&p->subtitle);
     p->state = PLAYER_STOPPED;
 }
 
@@ -252,6 +268,8 @@ int player_update(Player *p) {
         p->zoom_osd_visible  = 0;
     if (p->audio_osd_visible && SDL_GetTicks() >= p->audio_osd_hide_at)
         p->audio_osd_visible = 0;
+    if (p->sub_osd_visible   && SDL_GetTicks() >= p->sub_osd_hide_at)
+        p->sub_osd_visible   = 0;
 
     /* Audio-only EOS: no video queue, so check audio thread directly */
     if (!p->eos && p->demux.video_stream_idx < 0 && p->audio.eos)
@@ -455,14 +473,17 @@ static void draw_osd(SDL_Renderer *r, TTF_Font *font, TTF_Font *font_small,
 
     /* Hint bar — drawn at the very bottom of the OSD area */
     static const HintItem play_hints[] = {
-        { "A",   "Pause"  }, { "\xe2\x86\x90\xe2\x86\x92", "\xc2\xb1" "10s" },
-        { "L1",  "–60s"  }, { "R1",  "+60s" }, { "B", "Stop" },
+        { "A",   "Pause" }, { "\xe2\x86\x90\xe2\x86\x92", "\xc2\xb1" "10s" },
+        { "L1",  "–60s" }, { "R1",  "+60s" },
+        { "START", "Subs" }, { "B", "Stop" },
     };
     static const HintItem pause_hints[] = {
         { "A",   "Resume" }, { "\xe2\x86\x90\xe2\x86\x92", "\xc2\xb1" "10s" },
-        { "L1",  "–60s"  }, { "R1",  "+60s" }, { "B", "Stop" },
+        { "L1",  "–60s"  }, { "R1",  "+60s" },
+        { "START", "Subs" }, { "B", "Stop" },
     };
     const HintItem *hints = (p->state == PLAYER_PAUSED) ? pause_hints : play_hints;
+    int hint_count = 6;
     int hint_bar_h = sc(24, win_w);
     int hint_y     = win_h - hint_bar_h;
     /* glyph_h: font height + ~28% padding (matches hintbar.c's glyph_pad) */
@@ -470,12 +491,12 @@ static void draw_osd(SDL_Renderer *r, TTF_Font *font, TTF_Font *font_small,
     /* item_gap: ~129% of font height (matches hintbar.c's item_gap) */
     int ig = TTF_FontHeight(font_small) * 9 / 7;
     int total_w = 0;
-    for (int i = 0; i < 5; i++)
+    for (int i = 0; i < hint_count; i++)
         total_w += hintbar_item_width(font_small, &hints[i], gh)
-                   + (i < 4 ? ig : 0);
+                   + (i < hint_count - 1 ? ig : 0);
     int hint_x = (win_w - total_w) / 2;
     if (hint_x < sc(8, win_w)) hint_x = sc(8, win_w);
-    hintbar_draw_items(r, font_small, hints, 5, t, hint_x, hint_y, hint_bar_h);
+    hintbar_draw_items(r, font_small, hints, hint_count, t, hint_x, hint_y, hint_bar_h);
 }
 
 /* Generic segmented bar used for both volume and brightness OSD */
@@ -520,6 +541,66 @@ static void draw_indicator_bar(SDL_Renderer *r, TTF_Font *font,
               0xff, 0xff, 0xff);
 }
 
+/* Draw subtitle text centred near the bottom.
+   bottom_y is the y coordinate of the bottom boundary (OSD top, or win_h). */
+static void draw_subtitle_text(SDL_Renderer *r, TTF_Font *font,
+                               const char *text, int win_w, int bottom_y) {
+    int pad = sc(8, win_w);
+    int lh  = TTF_FontHeight(font);
+
+    /* Count lines and find max width */
+    char buf[SUB_TEXT_MAX];
+    strncpy(buf, text, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = '\0';
+
+    int line_count = 1;
+    for (char *p = buf; *p; p++)
+        if (*p == '\n') line_count++;
+
+    int max_w = 0;
+    char tmp[SUB_TEXT_MAX];
+    strncpy(tmp, buf, sizeof(tmp) - 1);
+    tmp[sizeof(tmp) - 1] = '\0';
+    char *scan = tmp;
+    while (scan) {
+        char *nl = strchr(scan, '\n');
+        if (nl) *nl = '\0';
+        int lw = 0, dummy = 0;
+        TTF_SizeUTF8(font, scan, &lw, &dummy);
+        if (lw > max_w) max_w = lw;
+        scan = nl ? nl + 1 : NULL;
+    }
+
+    if (max_w <= 0) return;
+    if (max_w > win_w - pad * 4) max_w = win_w - pad * 4;
+
+    int total_h = line_count * lh + (line_count - 1) * sc(2, win_w);
+    int box_w   = max_w + pad * 2;
+    int box_h   = total_h + pad * 2;
+    int box_x   = (win_w - box_w) / 2;
+    int box_y   = bottom_y - box_h - pad;
+
+    fill_rounded_rect(r, box_x, box_y, box_w, box_h, sc(8, win_w),
+                      0, 0, 0, 180);
+
+    /* Draw each line */
+    strncpy(buf, text, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = '\0';
+    char *tok = buf;
+    int row = 0;
+    while (tok) {
+        char *nl = strchr(tok, '\n');
+        if (nl) *nl = '\0';
+        int lw = 0, dummy = 0;
+        TTF_SizeUTF8(font, tok, &lw, &dummy);
+        int tx = box_x + (box_w - lw) / 2;
+        int ty = box_y + pad + row * (lh + sc(2, win_w));
+        draw_text(r, font, tok, tx, ty, lw + 2, 0xff, 0xff, 0xff);
+        tok = nl ? nl + 1 : NULL;
+        row++;
+    }
+}
+
 static void draw_volume_bar(SDL_Renderer *r, TTF_Font *font,
                             const Player *p, const Theme *t, int win_w) {
     /* Anchored to top-right: pre-compute box_w to position it */
@@ -558,6 +639,18 @@ void player_draw(SDL_Renderer *r, TTF_Font *font, TTF_Font *font_small,
                              win_w, win_h, zoom_t[p->zoom_mode], &src, &dst);
             SDL_RenderCopy(r, p->video_tex, &src, &dst);
         }
+
+        /* Subtitles — drawn above video, below OSD */
+        {
+            double pos = audio_get_clock(&p->audio);
+            const SubEntry *sub = sub_get(&p->subtitle, pos);
+            if (sub) {
+                int osd_h  = show_osd ? sc(80, win_w) : 0;
+                int bottom = win_h - osd_h - sc(4, win_w);
+                draw_subtitle_text(r, font, sub->text, win_w, bottom);
+            }
+        }
+
         if (show_osd)
             draw_osd(r, font, font_small, p, t, win_w, win_h);
     } else {
@@ -594,9 +687,9 @@ void player_draw(SDL_Renderer *r, TTF_Font *font, TTF_Font *font_small,
     if (p->bri_osd_visible)
         draw_brightness_bar(r, font, p, t, win_w);
 
-    /* Reusable centred label helper for zoom + audio OSD */
+    /* Reusable centred label helper for zoom + audio + sub OSD */
     int osd_row = 0; /* increments so stacked labels don't overlap */
-    if (p->zoom_osd_visible || p->audio_osd_visible) {
+    if (p->zoom_osd_visible || p->audio_osd_visible || p->sub_osd_visible) {
         /* Measure the taller of the two so row height is consistent */
         int lh = TTF_FontHeight(font);
         int pad   = sc(8, win_w);
@@ -626,6 +719,18 @@ void player_draw(SDL_Renderer *r, TTF_Font *font, TTF_Font *font_small,
             fill_rounded_rect(r, bx, by, lw + pad * 2, lh + pad * 2, toast_rad,
                               0, 0, 0, 180);
             draw_text(r, font, p->audio_osd_label, bx + pad, by + pad, lw,
+                      t->highlight_text.r, t->highlight_text.g, t->highlight_text.b);
+            osd_row++;
+        }
+
+        if (p->sub_osd_visible) {
+            int lw = 0, dummy = 0;
+            TTF_SizeUTF8(font, p->sub_osd_label, &lw, &dummy);
+            int bx = (win_w - lw) / 2 - pad;
+            int by = sbar_h + pad * 2 + osd_row * row_h;
+            fill_rounded_rect(r, bx, by, lw + pad * 2, lh + pad * 2, toast_rad,
+                              0, 0, 0, 180);
+            draw_text(r, font, p->sub_osd_label, bx + pad, by + pad, lw,
                       t->highlight_text.r, t->highlight_text.g, t->highlight_text.b);
         }
     }

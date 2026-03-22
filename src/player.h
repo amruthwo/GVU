@@ -5,6 +5,7 @@
 #include "audio.h"
 #include "video.h"
 #include "theme.h"
+#include "subtitle.h"
 
 typedef enum {
     PLAYER_STOPPED = 0,
@@ -58,6 +59,12 @@ typedef struct {
     int          audio_osd_visible;
     Uint32       audio_osd_hide_at;
     char         audio_osd_label[64];
+
+    /* Subtitles */
+    SubCtx       subtitle;
+    int          sub_osd_visible;
+    Uint32       sub_osd_hide_at;
+    char         sub_osd_label[32];   /* "Subtitles ON" / "OFF" / "No subtitles" */
 } Player;
 
 /* Open file, initialise demux + audio + video. Does not start playback. */
@@ -99,6 +106,9 @@ void player_zoom_cycle(Player *p);
 
 /* Cycle to the next audio track (no-op if only one track). */
 void player_cycle_audio(Player *p);
+
+/* Toggle subtitle display on/off. Shows a toast with the new state. */
+void player_toggle_subs(Player *p);
 
 void player_close (Player *p);
 
