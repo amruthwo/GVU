@@ -48,7 +48,8 @@ cp -v "$BUILD/libs32/"* "$APP/libs32/"
 cp -v "$REPO_ROOT/resources/fonts/DejaVuSans.ttf"  "$APP/resources/fonts/"
 cp -v "$REPO_ROOT/resources/default_cover.png"      "$APP/resources/"
 cp -v "$REPO_ROOT/resources/scrape_covers.sh"       "$APP/resources/"
-chmod +x "$APP/resources/scrape_covers.sh"
+cp -v "$REPO_ROOT/resources/clear_covers.sh"        "$APP/resources/"
+chmod +x "$APP/resources/scrape_covers.sh" "$APP/resources/clear_covers.sh"
 
 # gvu.conf — written fresh each package so it never lives in the repo.
 # TMDB key is read from .tmdb_key in the repo root (gitignored).
