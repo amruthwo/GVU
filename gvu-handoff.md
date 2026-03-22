@@ -362,7 +362,7 @@ docker run --rm -v "$(pwd):/gvu:z" gvu-a30 \
     python3 /gvu/cross-compile/miyoo-a30/patch_verneed.py /gvu/build/gvu32
 
 # Deploy to device:
-scp build/gvu32 spruce@192.168.1.62:/mnt/SDCARD/App/GVU/
+scp build/gvu32 spruce@<device-ip>:/mnt/SDCARD/App/GVU/
 
 # Output: build/gvu32 (patched), build/libs32/libz.so.1
 ```
@@ -821,7 +821,7 @@ bash cross-compile/miyoo-a30/package_gvu_a30.sh
 To update the key on a device that's already running GVU, edit `gvu.conf` directly:
 
 ```bash
-ssh spruce@192.168.1.62
+ssh spruce@<device-ip>
 # then on device:
 vi /mnt/SDCARD/App/GVU/gvu.conf
 # add or change: tmdb_key = your_new_key_here
@@ -842,7 +842,7 @@ bash cross-compile/miyoo-a30/package_gvu_a30.sh
 To remove the key from a running device:
 
 ```bash
-ssh spruce@192.168.1.62 'sed -i "/tmdb_key/d" /mnt/SDCARD/App/GVU/gvu.conf'
+ssh spruce@<device-ip> 'sed -i "/tmdb_key/d" /mnt/SDCARD/App/GVU/gvu.conf'
 ```
 
 #### Where it's used in code
@@ -1281,11 +1281,11 @@ The normal workflow — edit, build/test, commit, push:
 
 ```bash
 # 1. Build and deploy to device for testing
-docker run --rm -v /home/amruthwo/Projects/GVU/gvu:/gvu:z gvu-a30 \
+docker run --rm -v $(pwd):/gvu:z gvu-a30 \
     bash -c "make -C /gvu miyoo-a30-build && cp /gvu/gvu32 /gvu/build/gvu32"
-docker run --rm -v /home/amruthwo/Projects/GVU/gvu:/gvu:z gvu-a30 \
+docker run --rm -v $(pwd):/gvu:z gvu-a30 \
     python3 /gvu/cross-compile/miyoo-a30/patch_verneed.py /gvu/build/gvu32
-scp build/gvu32 spruce@192.168.1.62:/mnt/SDCARD/App/GVU/
+scp build/gvu32 spruce@<device-ip>:/mnt/SDCARD/App/GVU/
 
 # 2. Commit (from repo root ~/Projects/GVU/gvu)
 git add src/whatever.c src/whatever.h
@@ -1440,7 +1440,7 @@ Commands that succeed in an SSH session can fail when run by GVU via `posix_spaw
 
 **Workaround for SSH testing of on-device shell logic:**
 Write the script to `/tmp/test.sh` on the device, then run it with
-`ssh spruce@192.168.1.62 "sh /tmp/test.sh"` rather than trying to inline complex shell
+`ssh spruce@<device-ip> "sh /tmp/test.sh"` rather than trying to inline complex shell
 commands. Inline commands with `&&`, `||`, or quotes frequently get mangled by the SpruceOS
 SSH wrapper.
 
