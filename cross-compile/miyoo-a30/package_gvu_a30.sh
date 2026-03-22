@@ -50,6 +50,21 @@ cp -v "$REPO_ROOT/resources/default_cover.png"      "$APP/resources/"
 cp -v "$REPO_ROOT/resources/scrape_covers.sh"       "$APP/resources/"
 chmod +x "$APP/resources/scrape_covers.sh"
 
+# gvu.conf — written fresh each package so it never lives in the repo.
+# TMDB key is read from .tmdb_key in the repo root (gitignored).
+# Users who build from source get TVMaze-only; release zips include the key.
+printf 'theme = SPRUCE\n' > "$APP/gvu.conf"
+TMDB_KEY_FILE="$REPO_ROOT/.tmdb_key"
+if [ -f "$TMDB_KEY_FILE" ]; then
+    KEY=$(tr -d '[:space:]' < "$TMDB_KEY_FILE")
+    if [ -n "$KEY" ]; then
+        printf 'tmdb_key = %s\n' "$KEY" >> "$APP/gvu.conf"
+        echo "TMDB key: included from .tmdb_key"
+    fi
+else
+    echo "TMDB key: not found (.tmdb_key missing) — TVMaze-only package"
+fi
+
 OUTFILE="$REPO_ROOT/build/gvu_spruce_a30_v${VERSION}.zip"
 (cd "$STAGE" && zip -r "$OUTFILE" spruce_gvu_pkg)
 echo ""
