@@ -1020,9 +1020,9 @@ int main(int argc, char *argv[]) {
                 }
                 SDL_FreeSurface(as);
             }
-            /* Hint */
-            SDL_Color hc = { t->highlight_text.r, t->highlight_text.g,
-                             t->highlight_text.b, 255 };
+            /* Hint — use highlight_bg so it's readable against the panel background */
+            SDL_Color hc = { t->highlight_bg.r, t->highlight_bg.g,
+                             t->highlight_bg.b, 255 };
             SDL_Surface *hs = TTF_RenderUTF8_Blended(font_small, "A: Fetch   B: Cancel", hc);
             if (hs) {
                 SDL_Texture *ht = SDL_CreateTextureFromSurface(renderer, hs);

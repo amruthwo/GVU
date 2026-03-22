@@ -493,14 +493,15 @@ static void draw_indicator_bar(SDL_Renderer *r, TTF_Font *font,
     int label_slot = sc(46, win_w);
     int box_w  = bar_w + pad * 4 + label_slot;
 
-    SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
-    SDL_SetRenderDrawColor(r, 0, 0, 0, 180);
-    SDL_Rect bg = { box_x, box_y, box_w, bar_h };
-    SDL_RenderFillRect(r, &bg);
-    SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_NONE);
+    fill_rounded_rect(r, box_x, box_y, box_w, bar_h, sc(8, win_w),
+                      0, 0, 0, 180);
 
+    /* The box is always a dark semi-transparent black, so use light fixed
+       colors for text and unfilled segments to guarantee readability across
+       all themes.  Filled segments use highlight_bg which is always
+       theme-appropriate and visible against the dark background. */
     draw_text(r, font, label, box_x + pad, box_y + pad,
-              label_slot, t->secondary.r, t->secondary.g, t->secondary.b);
+              label_slot, 0xc0, 0xc0, 0xc0);
 
     int sx = box_x + pad + label_slot;
     int sy = box_y + pad;
@@ -510,14 +511,13 @@ static void draw_indicator_bar(SDL_Renderer *r, TTF_Font *font,
             fill_rect(r, x, sy, seg_w, seg_h,
                       t->highlight_bg.r, t->highlight_bg.g, t->highlight_bg.b);
         else
-            fill_rect(r, x, sy, seg_w, seg_h,
-                      t->secondary.r, t->secondary.g, t->secondary.b);
+            fill_rect(r, x, sy, seg_w, seg_h, 0x50, 0x50, 0x50);
     }
 
     char pct[8];
     snprintf(pct, sizeof(pct), "%d%%", (int)(value * 100.0f + 0.5f));
     draw_text(r, font, pct, sx, sy + seg_h + sc(4, win_w), sc(60, win_w),
-              t->text.r, t->text.g, t->text.b);
+              0xff, 0xff, 0xff);
 }
 
 static void draw_volume_bar(SDL_Renderer *r, TTF_Font *font,
