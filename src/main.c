@@ -635,9 +635,11 @@ int main(int argc, char *argv[]) {
                     player_show_osd(&player);
                     switch (ev.key.keysym.sym) {
                         case SDLK_SPACE:
-                        case SDLK_RETURN:
                             if (player.state == PLAYER_PLAYING) player_pause(&player);
                             else if (player.state == PLAYER_PAUSED) player_resume(&player);
+                            break;
+                        case SDLK_RETURN: /* START — toggle subtitles */
+                            player_toggle_subs(&player);
                             break;
                         case SDLK_LEFT:  player_seek(&player, -10.0); break;
                         case SDLK_RIGHT: player_seek(&player, +10.0); break;
