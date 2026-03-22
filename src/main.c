@@ -156,6 +156,24 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "a30_screen_init failed\n");
         IMG_Quit(); TTF_Quit(); SDL_Quit(); return 1;
     }
+
+    /* Max out the ALSA digital volume at startup so GVU's software volume
+       scale (0–100%) covers the full hardware range from the start.
+       SpruceOS may leave the DAC below maximum, causing the indicator to
+       read 100% while the actual output is quieter than expected. */
+    {
+        static char *vol_argv[] = {
+            "sh", "-c",
+            "amixer sset 'digital volume' 63 >/dev/null 2>&1",
+            NULL
+        };
+        static char *vol_env[] = {
+            "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            NULL
+        };
+        pid_t vol_pid;
+        posix_spawn(&vol_pid, "/bin/sh", NULL, NULL, vol_argv, vol_env);
+    }
     SDL_Surface *a30_surf = SDL_CreateRGBSurface(0, win_w, win_h, 32,
                                 0x00FF0000u, 0x0000FF00u,
                                 0x000000FFu, 0xFF000000u);
@@ -963,13 +981,7 @@ int main(int argc, char *argv[]) {
             int pw = win_w * 3 / 4, ph = win_h * 2 / 5;
             int px = (win_w - pw) / 2, py = (win_h - ph) / 2;
             SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
-            SDL_SetRenderDrawColor(renderer, t->background.r, t->background.g,
-                                   t->background.b, 255);
-            SDL_Rect panel = { px, py, pw, ph };
-            SDL_RenderFillRect(renderer, &panel);
-            SDL_SetRenderDrawColor(renderer, t->highlight_bg.r,
-                                   t->highlight_bg.g, t->highlight_bg.b, 255);
-            SDL_RenderDrawRect(renderer, &panel);
+            overlay_panel(renderer, px, py, pw, ph, t);
             /* Title */
             SDL_Color tc = { t->text.r, t->text.g, t->text.b, 255 };
             SDL_Surface *ts = TTF_RenderUTF8_Blended(font, "Fetch Cover Art?", tc);
@@ -1034,13 +1046,7 @@ int main(int argc, char *argv[]) {
             int pw = win_w * 3 / 4, ph = win_h / 5;
             int px = (win_w - pw) / 2, py = (win_h - ph) / 2;
             SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
-            SDL_SetRenderDrawColor(renderer, t->background.r, t->background.g,
-                                   t->background.b, 255);
-            SDL_Rect panel = { px, py, pw, ph };
-            SDL_RenderFillRect(renderer, &panel);
-            SDL_SetRenderDrawColor(renderer, t->highlight_bg.r,
-                                   t->highlight_bg.g, t->highlight_bg.b, 255);
-            SDL_RenderDrawRect(renderer, &panel);
+            overlay_panel(renderer, px, py, pw, ph, t);
             /* Animated dots */
             static int s_dot_frame = 0;
             s_dot_frame = (s_dot_frame + 1) % 60;

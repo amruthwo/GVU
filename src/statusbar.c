@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include <math.h>
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_ttf.h>
 
@@ -22,11 +23,34 @@ static void fill_rect(SDL_Renderer *r, int x, int y, int w, int h,
     SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_NONE);
 }
 
-static void draw_rect_outline(SDL_Renderer *r, int x, int y, int w, int h,
-                               Uint8 R, Uint8 G, Uint8 B) {
+/* Rounded rectangle outline using Bresenham midpoint circle for corners. */
+static void draw_rounded_outline(SDL_Renderer *r, int x, int y, int w, int h,
+                                  int rad, Uint8 R, Uint8 G, Uint8 B) {
     SDL_SetRenderDrawColor(r, R, G, B, 0xff);
-    SDL_Rect rect = {x, y, w, h};
-    SDL_RenderDrawRect(r, &rect);
+    if (rad <= 0) {
+        SDL_Rect rect = {x, y, w, h};
+        SDL_RenderDrawRect(r, &rect);
+        return;
+    }
+    /* Straight edges */
+    SDL_RenderDrawLine(r, x + rad,     y,         x + w - 1 - rad, y);
+    SDL_RenderDrawLine(r, x + rad,     y + h - 1, x + w - 1 - rad, y + h - 1);
+    SDL_RenderDrawLine(r, x,           y + rad,   x,               y + h - 1 - rad);
+    SDL_RenderDrawLine(r, x + w - 1,   y + rad,   x + w - 1,       y + h - 1 - rad);
+    /* Corner arcs — midpoint circle per quadrant */
+    int f = 1 - rad, dfx = 0, dfy = -2 * rad, px = 0, py = rad;
+    while (px <= py) {
+        SDL_RenderDrawPoint(r, x + rad - py,         y + rad - px);         /* TL */
+        SDL_RenderDrawPoint(r, x + rad - px,         y + rad - py);
+        SDL_RenderDrawPoint(r, x + w - 1 - rad + py, y + rad - px);         /* TR */
+        SDL_RenderDrawPoint(r, x + w - 1 - rad + px, y + rad - py);
+        SDL_RenderDrawPoint(r, x + rad - py,         y + h - 1 - rad + px); /* BL */
+        SDL_RenderDrawPoint(r, x + rad - px,         y + h - 1 - rad + py);
+        SDL_RenderDrawPoint(r, x + w - 1 - rad + py, y + h - 1 - rad + px); /* BR */
+        SDL_RenderDrawPoint(r, x + w - 1 - rad + px, y + h - 1 - rad + py);
+        px++; dfx += 2; f += dfx + 1;
+        if (f >= 0) { py--; dfy += 2; f += dfy; }
+    }
 }
 
 /* -------------------------------------------------------------------------
@@ -169,11 +193,13 @@ static int draw_battery(SDL_Renderer *r, int x_right, int y_center,
     int ix = x_right - bw - nub;
     int iy = y_center - bh / 2;
 
-    /* Nub (right side) */
+    int brad = (bh > 6) ? 2 : 1;  /* subtle corner radius for battery body */
+
+    /* Nub (right side) — small rounded cap */
     fill_rect(r, ix + bw, iy + (bh - nubh) / 2, nub, nubh, R, G, B, 0xff);
 
-    /* Outline */
-    draw_rect_outline(r, ix, iy, bw, bh, R, G, B);
+    /* Outline — rounded */
+    draw_rounded_outline(r, ix, iy, bw, bh, brad, R, G, B);
 
     /* Fill level */
     int pad  = 2;

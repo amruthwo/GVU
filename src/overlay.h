@@ -60,3 +60,10 @@ void upnext_draw(SDL_Renderer *r, TTF_Font *font, TTF_Font *font_small,
 void error_draw(SDL_Renderer *r, TTF_Font *font, TTF_Font *font_small,
                 const Theme *theme, int win_w, int win_h,
                 const char *path, const char *errmsg);
+
+/* -------------------------------------------------------------------------
+ * Shared panel helper — draws a rounded, theme-styled dialog panel.
+ * Exported so inline overlays in main.c can match the style.
+ * ---------------------------------------------------------------------- */
+void overlay_panel(SDL_Renderer *r, int x, int y, int w, int h,
+                   const Theme *theme);
