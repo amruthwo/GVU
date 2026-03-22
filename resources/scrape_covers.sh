@@ -99,31 +99,30 @@ if [ -n "$TMDB_KEY" ]; then
 fi
 
 # -------------------------------------------------------------------------
-# 2. TVMaze (fallback — no key, TV shows only)
-#    For season folders: fetch season-specific artwork via a two-step lookup
-#    (show search → show ID → seasons endpoint).  Falls back to show art.
+# 2. TVMaze — always queried for show_id (needed for season art bulk scraping
+#    even when TMDB already provided the show cover).  Image URL only used as
+#    fallback when TMDB found nothing.
 # -------------------------------------------------------------------------
-if [ -z "$cover_url" ]; then
-    echo "Trying TVMaze..."
-    url="${TVMAZE_SEARCH}?q=${query}"
-    if wget -q -O "$tmpfile" "$url" 2>/dev/null; then
-        # Save show-level image URL as fallback before we overwrite tmpfile
+echo "Querying TVMaze..."
+url="${TVMAZE_SEARCH}?q=${query}"
+if wget -q -O "$tmpfile" "$url" 2>/dev/null; then
+    # Extract show ID for season artwork lookup
+    show_id=$(tr ',' '\n' < "$tmpfile" \
+              | grep '"id"' | head -1 \
+              | sed 's/[^0-9]*\([0-9]*\).*/\1/' || true)
+
+    if [ -z "$cover_url" ]; then
+        # TMDB found nothing — use TVMaze image
         show_orig=$(tr ',' '\n' < "$tmpfile" \
                     | grep '"original"' | head -1 \
                     | sed 's/.*"original":"\([^"]*\)".*/\1/' || true)
         show_orig=$(echo "$show_orig" | sed 's|^https://|http://|')
-
-        # Extract show ID for season artwork lookup
-        show_id=$(tr ',' '\n' < "$tmpfile" \
-                  | grep '"id"' | head -1 \
-                  | sed 's/[^0-9]*\([0-9]*\).*/\1/' || true)
 
         # Season-specific artwork (only when in a detected season folder)
         if [ -n "$season_num" ] && [ -n "$show_id" ]; then
             echo "TVMaze: fetching season $season_num artwork for show $show_id"
             seas_url="http://api.tvmaze.com/shows/${show_id}/seasons"
             if wget -q -O "$tmpfile" "$seas_url" 2>/dev/null; then
-                # Find the season by number, then get its "original" image URL.
                 # Anchor to $ because after tr each field ends at EOL (no trailing chars).
                 # grep -A 20: "number" and "original" are ~13 comma-separated fields apart.
                 orig=$(tr ',' '\n' < "$tmpfile" \
@@ -138,7 +137,6 @@ if [ -z "$cover_url" ]; then
             fi
         fi
 
-        # Fall back to show-level artwork if season art was not found
         if [ -z "$cover_url" ]; then
             if [ -n "$show_orig" ] && [ "$show_orig" != "null" ]; then
                 cover_url="$show_orig"
@@ -148,8 +146,10 @@ if [ -z "$cover_url" ]; then
             fi
         fi
     else
-        echo "TVMaze: request failed"
+        echo "TVMaze: show_id=${show_id} (show cover already found via TMDB)"
     fi
+else
+    echo "TVMaze: request failed"
 fi
 
 # -------------------------------------------------------------------------
