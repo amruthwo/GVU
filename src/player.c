@@ -263,6 +263,18 @@ int player_update(Player *p) {
                           ? audio_get_clock(&p->audio)
                           : 0.0;
 
+    /* When audio EOS is reached and the ring is fully drained, the audio
+       clock freezes.  Any video frames with PTS beyond that frozen value
+       would be permanently "too early" and the EOS sentinel would never
+       be reached.  Detect this case so we can force the remaining frames
+       through below. */
+    int audio_done = 0;
+    if (p->demux.audio_stream_idx >= 0) {
+        SDL_LockMutex(p->audio.ring.mutex);
+        audio_done = p->audio.eos && (p->audio.ring.filled == 0);
+        SDL_UnlockMutex(p->audio.ring.mutex);
+    }
+
     int updated = 0;
 
     /* Drain video frames that are due or overdue */
@@ -279,8 +291,10 @@ int player_update(Player *p) {
 
         double diff = vf.pts - master_clock;
 
-        if (diff > AV_SYNC_THRESHOLD_SEC) {
-            /* Frame is too early — display it later */
+        if (diff > AV_SYNC_THRESHOLD_SEC && !audio_done) {
+            /* Frame is too early — display it later.
+               If audio is done and the clock is frozen, skip this check
+               so the remaining video frames drain and EOS is detected. */
             break;
         }
 
