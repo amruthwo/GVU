@@ -68,6 +68,7 @@ static void update_wifi(void) {
     Uint32 now = SDL_GetTicks();
     if (s_wifi_link >= 0.f && now - s_wifi_tick < WIFI_INTERVAL_MS) return;
     s_wifi_tick = now;
+    s_wifi_link = -1.f;  /* reset each poll; re-set below only if interface is up */
 
     FILE *f = fopen("/proc/net/wireless", "r");
     if (!f) return;
@@ -228,15 +229,14 @@ void statusbar_draw(SDL_Renderer *renderer, TTF_Font *font,
     SDL_RenderDrawLine(renderer, 0, bar_h - 1, win_w - 1, bar_h - 1);
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
 
-    Uint8 tr = theme->text.r, tg = theme->text.g, tb = theme->text.b;
-    Uint8 sr = theme->secondary.r, sg = theme->secondary.g, sb = theme->secondary.b;
+    Uint8 fr = theme->statusbar_fg.r, fg = theme->statusbar_fg.g, fb = theme->statusbar_fg.b;
 
     /* ---- Left: clock ---- */
     time_t t = time(NULL);
     struct tm *tm = localtime(&t);
     char clock_buf[8];
     strftime(clock_buf, sizeof(clock_buf), "%H:%M", tm);
-    draw_text_centered_y(renderer, font, clock_buf, pad, mid_y, tr, tg, tb);
+    draw_text_centered_y(renderer, font, clock_buf, pad, mid_y, fr, fg, fb);
 
     /* ---- Right: wifi bars + battery ---- */
     int x = win_w - pad;
@@ -245,7 +245,7 @@ void statusbar_draw(SDL_Renderer *renderer, TTF_Font *font,
     /* Battery */
     x -= (icon_h - 4) * 2 + sc(2, win_w);  /* rough space for icon+nub */
     draw_battery(renderer, x + (icon_h - 4) * 2 + sc(2, win_w), mid_y,
-                 icon_h, tr, tg, tb);
+                 icon_h, fr, fg, fb);
 
     /* Battery percentage text */
     if (s_battery_pct >= 0) {
@@ -253,16 +253,18 @@ void statusbar_draw(SDL_Renderer *renderer, TTF_Font *font,
         snprintf(pct_buf, sizeof(pct_buf), "%d%%", s_battery_pct);
         int pw = text_width(font, pct_buf);
         x -= pw + sc(4, win_w);
-        draw_text_centered_y(renderer, font, pct_buf, x, mid_y, sr, sg, sb);
+        draw_text_centered_y(renderer, font, pct_buf, x, mid_y, fr, fg, fb);
     }
 
-    /* Wifi bars */
-    int wifi_w = sc(4 * 3 + 3, win_w);   /* approx 4 bars + gaps */
-    x -= wifi_w + sc(8, win_w);
-    draw_wifi_bars(renderer, x + wifi_w, mid_y, icon_h, tr, tg, tb);
+    /* Wifi bars — hidden when wifi is off (s_wifi_link < 0 after a poll cycle) */
+    if (s_wifi_link >= 0.f) {
+        int wifi_w = sc(4 * 3 + 3, win_w);   /* approx 4 bars + gaps */
+        x -= wifi_w + sc(8, win_w);
+        draw_wifi_bars(renderer, x + wifi_w, mid_y, icon_h, fr, fg, fb);
+    }
 
     /* ---- Center: "GVU" ---- */
     int title_w = text_width(font, "GVU");
     draw_text_centered_y(renderer, font, "GVU",
-                          (win_w - title_w) / 2, mid_y, sr, sg, sb);
+                          (win_w - title_w) / 2, mid_y, fr, fg, fb);
 }

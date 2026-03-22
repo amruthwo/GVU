@@ -16,6 +16,7 @@ typedef struct {
     RGB secondary;
     RGB highlight_bg;
     RGB highlight_text;
+    RGB statusbar_fg;   /* text and icon color for the status bar */
     /* Cover icon colors (SVG recoloring, independent of UI colors) */
     RGB cover_body;
     RGB cover_tab;
