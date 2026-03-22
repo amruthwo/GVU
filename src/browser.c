@@ -211,7 +211,10 @@ static void gaussian_blur(Uint32 *pixels, int w, int h, int r) {
     free(A); free(B);
 }
 
-/* Build a blurred backdrop texture: cover-fill scale → center-crop → blur. */
+/* Build a blurred backdrop texture.
+   Works at 1/4 resolution (e.g. 160×120 for a 640×480 screen) — the GPU
+   scales it back up on render, which is visually identical to a full-res blur
+   but ~16× faster on CPU.  Eliminates the 5-8 s freeze on the A30. */
 static SDL_Texture *build_backdrop(SDL_Renderer *renderer,
                                    const char *cover_path,
                                    int win_w, int win_h) {
@@ -222,53 +225,41 @@ static SDL_Texture *build_backdrop(SDL_Renderer *renderer,
     SDL_FreeSurface(orig);
     if (!src) return NULL;
 
-    /* Scale so image fills win_w × win_h (cover fill, not letterbox) */
-    float sx = (float)win_w / src->w;
-    float sy = (float)win_h / src->h;
-    float s  = sx > sy ? sx : sy;
-    int   sw = (int)(src->w * s + 0.5f);
-    int   sh = (int)(src->h * s + 0.5f);
-
-    SDL_Surface *scaled = SDL_CreateRGBSurfaceWithFormat(0, sw, sh, 32,
-                                                          SDL_PIXELFORMAT_ARGB8888);
-    if (!scaled) { SDL_FreeSurface(src); return NULL; }
+    /* Scale directly into a quarter-size surface */
+    int bw = win_w / 4;
+    int bh = win_h / 4;
+    SDL_Surface *small = SDL_CreateRGBSurfaceWithFormat(0, bw, bh, 32,
+                                                         SDL_PIXELFORMAT_ARGB8888);
+    if (!small) { SDL_FreeSurface(src); return NULL; }
     SDL_SetSurfaceBlendMode(src, SDL_BLENDMODE_NONE);
-    SDL_BlitScaled(src, NULL, scaled, NULL);
+    SDL_BlitScaled(src, NULL, small, NULL);
     SDL_FreeSurface(src);
 
-    /* Center-crop to exactly win_w × win_h */
-    SDL_Surface *bg = SDL_CreateRGBSurfaceWithFormat(0, win_w, win_h, 32,
-                                                      SDL_PIXELFORMAT_ARGB8888);
-    if (!bg) { SDL_FreeSurface(scaled); return NULL; }
-    SDL_Rect crop = { (sw - win_w) / 2, (sh - win_h) / 2, win_w, win_h };
-    SDL_SetSurfaceBlendMode(scaled, SDL_BLENDMODE_NONE);
-    SDL_BlitSurface(scaled, &crop, bg, NULL);
-    SDL_FreeSurface(scaled);
-
-    /* Copy pixels to a flat array (handles SDL surface pitch padding) */
-    int     n      = win_w * win_h;
+    /* Blur the small surface (radius 3 on 160×120 ≈ radius 12 on 640×480) */
+    int     n      = bw * bh;
     Uint32 *pixels = malloc((size_t)n * sizeof(Uint32));
     if (pixels) {
-        SDL_LockSurface(bg);
-        for (int y = 0; y < win_h; y++)
-            memcpy(pixels + y * win_w,
-                   (Uint8 *)bg->pixels + y * bg->pitch,
-                   (size_t)win_w * sizeof(Uint32));
-        SDL_UnlockSurface(bg);
+        SDL_LockSurface(small);
+        for (int y = 0; y < bh; y++)
+            memcpy(pixels + y * bw,
+                   (Uint8 *)small->pixels + y * small->pitch,
+                   (size_t)bw * sizeof(Uint32));
+        SDL_UnlockSurface(small);
 
-        gaussian_blur(pixels, win_w, win_h, 10);
+        gaussian_blur(pixels, bw, bh, 3);
 
-        SDL_LockSurface(bg);
-        for (int y = 0; y < win_h; y++)
-            memcpy((Uint8 *)bg->pixels + y * bg->pitch,
-                   pixels + y * win_w,
-                   (size_t)win_w * sizeof(Uint32));
-        SDL_UnlockSurface(bg);
+        SDL_LockSurface(small);
+        for (int y = 0; y < bh; y++)
+            memcpy((Uint8 *)small->pixels + y * small->pitch,
+                   pixels + y * bw,
+                   (size_t)bw * sizeof(Uint32));
+        SDL_UnlockSurface(small);
         free(pixels);
     }
 
-    SDL_Texture *tex = SDL_CreateTextureFromSurface(renderer, bg);
-    SDL_FreeSurface(bg);
+    /* Upload the small texture — SDL_RenderCopy will stretch it to full screen */
+    SDL_Texture *tex = SDL_CreateTextureFromSurface(renderer, small);
+    SDL_FreeSurface(small);
     if (tex) SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_NONE);
     return tex;
 }
@@ -461,13 +452,13 @@ static void ensure_season_covers(SDL_Renderer *renderer, CoverCache *cache,
     cache->season_tex_count = show->season_count;
     if (!cache->season_textures) return;
 
-    /* Try season's own cover, then show's cover.  Only store owned textures. */
+    /* Load each season's own cover only.  Seasons without a cover get NULL here;
+       draw_season_list falls back to the show-level texture via get_cover(),
+       which is already cached from the folder grid — avoids loading the same
+       (potentially large) show cover JPEG once per season. */
     for (int i = 0; i < show->season_count; i++) {
         if (show->seasons[i].cover)
             cache->season_textures[i] = load_cover(renderer, show->seasons[i].cover);
-        if (!cache->season_textures[i] && show->cover)
-            cache->season_textures[i] = load_cover(renderer, show->cover);
-        /* If still NULL, draw_season_list will show nothing for the thumbnail */
     }
 }
 
@@ -634,19 +625,15 @@ static void draw_file_list(SDL_Renderer *renderer, TTF_Font *font,
 static void draw_season_list(SDL_Renderer *renderer, TTF_Font *font,
                              TTF_Font *font_small, BrowserState *state,
                              CoverCache *cache, const MediaLibrary *lib,
+                             SDL_Texture *default_cover,
                              const Theme *t, int win_w, int win_h) {
     const MediaFolder *show = &lib->folders[state->folder_idx];
     int count        = show->season_count;
     int has_backdrop = (cache->backdrop != NULL);
     int hint_bar_h   = sc(24, win_w);
-    int padding      = sc(8,  win_w);
-    int row_h        = sc(56, win_w);
-    int thumb_w      = (int)(row_h * 2.0f / 3.0f);
+    int header_h     = sc(56, win_w);  /* bottom show-name bar */
 
-    int content_h = win_h - hint_bar_h - row_h;
-    int visible   = content_h / row_h;
-
-    /* Draw backdrop + dim */
+    /* Draw backdrop + dim (common to all layouts) */
     if (has_backdrop) {
         SDL_RenderCopy(renderer, cache->backdrop, NULL, NULL);
         SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
@@ -654,87 +641,168 @@ static void draw_season_list(SDL_Renderer *renderer, TTF_Font *font,
         SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
     }
 
-    /* Clamp season scroll */
-    if (state->season_idx < state->season_scroll)
-        state->season_scroll = state->season_idx;
-    if (state->season_idx >= state->season_scroll + visible)
-        state->season_scroll = state->season_idx - visible + 1;
-    if (state->season_scroll < 0) state->season_scroll = 0;
+    if (state->season_layout == LAYOUT_LIST) {
+        /* ---- List view ---- */
+        int padding = sc(8, win_w);
+        int row_h   = header_h;
+        int thumb_w = (int)(row_h * 2.0f / 3.0f);
+        int content_h = win_h - hint_bar_h - row_h;
+        int visible   = content_h / row_h;
 
-    for (int i = state->season_scroll; i < state->season_scroll + visible; i++) {
-        if (i >= count) break;
-        int row = i - state->season_scroll;
-        int y   = row * row_h;
-        int sel = (i == state->season_idx);
+        /* Clamp scroll (item-based; cols=1) */
+        if (state->season_idx < state->season_scroll)
+            state->season_scroll = state->season_idx;
+        if (state->season_idx >= state->season_scroll + visible)
+            state->season_scroll = state->season_idx - visible + 1;
+        if (state->season_scroll < 0) state->season_scroll = 0;
 
-        if (has_backdrop) {
-            SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
-            if (sel)
-                fill_rect(renderer, padding, y, win_w - padding * 2, row_h,
-                          t->highlight_bg.r, t->highlight_bg.g, t->highlight_bg.b, 200);
-            else if (row % 2 == 0)
-                fill_rect(renderer, padding, y, win_w - padding * 2, row_h,
-                          0, 0, 0, 40);
-            SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
-        } else {
-            if (sel)
-                fill_rect(renderer, padding, y, win_w - padding * 2, row_h,
-                          t->highlight_bg.r, t->highlight_bg.g, t->highlight_bg.b, 0xff);
-            else if (row % 2 == 0)
-                fill_rect(renderer, padding, y, win_w - padding * 2, row_h,
-                          dim(t->background.r, 8), dim(t->background.g, 8),
-                          dim(t->background.b, 8), 0xff);
+        for (int i = state->season_scroll; i < state->season_scroll + visible; i++) {
+            if (i >= count) break;
+            int row = i - state->season_scroll;
+            int y   = row * row_h;
+            int sel = (i == state->season_idx);
+
+            if (has_backdrop) {
+                SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+                if (sel)
+                    fill_rect(renderer, padding, y, win_w - padding * 2, row_h,
+                              t->highlight_bg.r, t->highlight_bg.g, t->highlight_bg.b, 200);
+                else if (row % 2 == 0)
+                    fill_rect(renderer, padding, y, win_w - padding * 2, row_h,
+                              0, 0, 0, 40);
+                SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
+            } else {
+                if (sel)
+                    fill_rect(renderer, padding, y, win_w - padding * 2, row_h,
+                              t->highlight_bg.r, t->highlight_bg.g, t->highlight_bg.b, 0xff);
+                else if (row % 2 == 0)
+                    fill_rect(renderer, padding, y, win_w - padding * 2, row_h,
+                              dim(t->background.r, 8), dim(t->background.g, 8),
+                              dim(t->background.b, 8), 0xff);
+            }
+
+            /* Season thumbnail — fall back to show cover if no season-specific art */
+            SDL_Texture *thumb = (cache->season_textures && i < cache->season_tex_count)
+                                 ? cache->season_textures[i] : NULL;
+            if (!thumb)
+                thumb = get_cover(renderer, cache, lib, state->folder_idx, default_cover);
+            if (thumb) {
+                int tw, th;
+                SDL_QueryTexture(thumb, NULL, NULL, &tw, &th);
+                float scale = (tw > 0 && th > 0)
+                    ? ((float)thumb_w / tw < (float)(row_h - padding) / th
+                       ? (float)thumb_w / tw : (float)(row_h - padding) / th)
+                    : 1.0f;
+                int dw = (int)(tw * scale);
+                int dh = (int)(th * scale);
+                SDL_Rect dst = { padding + (thumb_w - dw) / 2,
+                                 y + padding / 2 + (row_h - padding - dh) / 2, dw, dh };
+                SDL_RenderCopy(renderer, thumb, NULL, &dst);
+            }
+
+            int text_x = padding + thumb_w + padding;
+            int text_w = win_w - text_x - padding;
+            RGB tc = sel ? t->highlight_text : t->text;
+            draw_text(renderer, font, show->seasons[i].name,
+                      text_x, y + row_h / 4 - TTF_FontHeight(font) / 2,
+                      text_w, tc.r, tc.g, tc.b);
+
+            char ep_buf[32];
+            snprintf(ep_buf, sizeof(ep_buf), "%d episode%s",
+                     show->seasons[i].file_count,
+                     show->seasons[i].file_count == 1 ? "" : "s");
+            draw_text(renderer, font_small, ep_buf,
+                      text_x, y + row_h * 3 / 5, text_w,
+                      t->secondary.r, t->secondary.g, t->secondary.b);
         }
 
-        /* Season thumbnail */
-        SDL_Texture *thumb = (cache->season_textures && i < cache->season_tex_count)
-                             ? cache->season_textures[i] : NULL;
-        if (thumb) {
-            int tw, th;
-            SDL_QueryTexture(thumb, NULL, NULL, &tw, &th);
-            float scale = (tw > 0 && th > 0)
-                ? ((float)thumb_w / tw < (float)(row_h - padding) / th
-                   ? (float)thumb_w / tw : (float)(row_h - padding) / th)
-                : 1.0f;
-            int dw = (int)(tw * scale);
-            int dh = (int)(th * scale);
-            SDL_Rect dst = { padding + (thumb_w - dw) / 2,
-                             y + padding / 2 + (row_h - padding - dh) / 2, dw, dh };
-            SDL_RenderCopy(renderer, thumb, NULL, &dst);
+    } else {
+        /* ---- Grid view (LAYOUT_LARGE / LAYOUT_SMALL) ---- */
+        /* Pass reduced height so tiles don't overlap the show-name header */
+        LayoutMetrics m = compute_metrics(state->season_layout, win_w, win_h - header_h);
+
+        /* Scroll clamping (row-based) */
+        int sel_row = state->season_idx / m.cols;
+        if (sel_row < state->season_scroll)
+            state->season_scroll = sel_row;
+        if (sel_row >= state->season_scroll + m.rows_visible)
+            state->season_scroll = sel_row - m.rows_visible + 1;
+        if (state->season_scroll < 0) state->season_scroll = 0;
+
+        int first = state->season_scroll * m.cols;
+        int last  = first + m.rows_visible * m.cols;
+        if (last > count) last = count;
+
+        for (int i = first; i < last; i++) {
+            int row = i / m.cols - state->season_scroll;
+            int col = i % m.cols;
+            int x   = m.padding + col * (m.tile_w + m.padding);
+            int y   = m.padding + row * (m.tile_h + m.padding);
+            int sel = (i == state->season_idx);
+
+            if (sel) {
+                SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+                fill_rect(renderer, x - 2, y - 2, m.tile_w + 4, m.tile_h + 4,
+                          t->highlight_bg.r, t->highlight_bg.g,
+                          t->highlight_bg.b, 170);
+                SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
+            }
+
+            SDL_Texture *thumb = (cache->season_textures && i < cache->season_tex_count)
+                                 ? cache->season_textures[i] : NULL;
+            if (!thumb)
+                thumb = get_cover(renderer, cache, lib, state->folder_idx, default_cover);
+            if (thumb) {
+                int tw, th;
+                SDL_QueryTexture(thumb, NULL, NULL, &tw, &th);
+                float scale = (tw > 0 && th > 0)
+                    ? ((float)m.tile_w / tw < (float)m.img_h / th
+                       ? (float)m.tile_w / tw : (float)m.img_h / th)
+                    : 1.0f;
+                int dw = (int)(tw * scale);
+                int dh = (int)(th * scale);
+                SDL_Rect dst = { x + (m.tile_w - dw) / 2,
+                                 y + (m.img_h  - dh) / 2, dw, dh };
+                SDL_RenderCopy(renderer, thumb, NULL, &dst);
+            } else {
+                fill_rect(renderer, x, y, m.tile_w, m.img_h,
+                          t->secondary.r, t->secondary.g, t->secondary.b, 0xff);
+            }
+
+            /* Name strip */
+            RGB strip = sel ? t->highlight_bg : (RGB){ dim(t->background.r, 10),
+                                                        dim(t->background.g, 10),
+                                                        dim(t->background.b, 10) };
+            fill_rect(renderer, x, y + m.img_h, m.tile_w, m.name_h,
+                      strip.r, strip.g, strip.b, 0xff);
+
+            RGB tc = sel ? t->highlight_text : t->text;
+            {
+                int name_w = 0, dummy = 0;
+                TTF_SizeUTF8(font, show->seasons[i].name, &name_w, &dummy);
+                int name_x = x + (m.tile_w - name_w) / 2;
+                if (name_x < x + 2) name_x = x + 2;
+                draw_text(renderer, font, show->seasons[i].name,
+                          name_x, y + m.img_h + (m.name_h - TTF_FontHeight(font)) / 2,
+                          m.tile_w - 4, tc.r, tc.g, tc.b);
+            }
         }
-
-        int text_x = padding + thumb_w + padding;
-        int text_w = win_w - text_x - padding;
-
-        RGB tc = sel ? t->highlight_text : t->text;
-        draw_text(renderer, font, show->seasons[i].name,
-                  text_x, y + row_h / 4 - TTF_FontHeight(font) / 2,
-                  text_w, tc.r, tc.g, tc.b);
-
-        /* Episode count */
-        char ep_buf[32];
-        snprintf(ep_buf, sizeof(ep_buf), "%d episode%s",
-                 show->seasons[i].file_count,
-                 show->seasons[i].file_count == 1 ? "" : "s");
-        draw_text(renderer, font_small, ep_buf,
-                  text_x, y + row_h * 3 / 5,
-                  text_w,
-                  t->secondary.r, t->secondary.g, t->secondary.b);
     }
 
-    /* Show name header at bottom */
-    int header_y = win_h - hint_bar_h - row_h;
+    /* Show name header at bottom (common to all layouts) */
+    int header_y = win_h - hint_bar_h - header_h;
     if (has_backdrop) {
         SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
-        fill_rect(renderer, 0, header_y, win_w, row_h, 0, 0, 0, 170);
+        fill_rect(renderer, 0, header_y, win_w, header_h, 0, 0, 0, 170);
         SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
     } else {
-        fill_rect(renderer, 0, header_y, win_w, row_h,
+        fill_rect(renderer, 0, header_y, win_w, header_h,
                   dim(t->background.r, 15), dim(t->background.g, 15),
                   dim(t->background.b, 15), 0xff);
     }
+    int padding = sc(8, win_w);
     draw_text(renderer, font, show->name,
-              padding, header_y + (row_h - TTF_FontHeight(font)) / 2,
+              padding, header_y + (header_h - TTF_FontHeight(font)) / 2,
               win_w - padding * 2,
               t->secondary.r, t->secondary.g, t->secondary.b);
 }
@@ -757,6 +825,7 @@ static void draw_hint_bar(SDL_Renderer *renderer, TTF_Font *font,
     static const HintItem season_hints[] = {
         { "A",   "Open"    },
         { "B",   "Back"    },
+        { "SEL", "Layout"  },
         { "X",   "History" },
     };
     static const HintItem file_hints[] = {
@@ -772,7 +841,7 @@ static void draw_hint_bar(SDL_Renderer *renderer, TTF_Font *font,
     if (state->view == VIEW_FOLDERS) {
         items = folder_hints; item_count = 6;
     } else if (state->view == VIEW_SEASONS) {
-        items = season_hints; item_count = 3;
+        items = season_hints; item_count = 4;
     } else {
         items = file_hints;   item_count = 6;
     }
@@ -788,6 +857,7 @@ void browser_init(BrowserState *state, CoverCache *cache,
     memset(state, 0, sizeof(*state));
     state->view             = VIEW_FOLDERS;
     state->layout           = LAYOUT_LARGE;
+    state->season_layout    = LAYOUT_LARGE;
     state->season_idx       = 0;
     state->prog_folder_idx  = -1;
     state->prog_season_idx  = -1;
@@ -826,7 +896,7 @@ void browser_draw(SDL_Renderer *renderer, TTF_Font *font, TTF_Font *font_small,
         ensure_backdrop(renderer, cache, lib, state->folder_idx, win_w, win_h);
         ensure_season_covers(renderer, cache, lib, state->folder_idx, default_cover);
         draw_season_list(renderer, font, font_small, state, cache, lib,
-                         theme, win_w, win_h);
+                         default_cover, theme, win_w, win_h);
     } else {
         ensure_backdrop(renderer, cache, lib, state->folder_idx, win_w, win_h);
         draw_file_list(renderer, font, state, cache, lib, theme, win_w, win_h);
@@ -921,6 +991,7 @@ int browser_handle_event(BrowserState *state, const MediaLibrary *lib,
         }
         if (key == SDLK_RCTRL || key == SDLK_TAB) {
             state->layout = (state->layout + 1) % LAYOUT_COUNT;
+            state->action = BROWSER_ACTION_LAYOUT_CHANGED;
             return 1;
         }
         if (key == SDLK_PAGEDOWN) {
@@ -935,9 +1006,20 @@ int browser_handle_event(BrowserState *state, const MediaLibrary *lib,
     } else if (state->view == VIEW_SEASONS) {
         const MediaFolder *show = &lib->folders[state->folder_idx];
         int count = show->season_count;
+        int cols  = compute_metrics(state->season_layout, 640, 480).cols;
 
-        if (key == SDLK_UP)   { if (state->season_idx > 0)          state->season_idx--; return 1; }
-        if (key == SDLK_DOWN) { if (state->season_idx < count - 1)  state->season_idx++; return 1; }
+        if (key == SDLK_UP) {
+            if (state->season_idx >= cols) state->season_idx -= cols;
+            else state->season_idx = 0;
+            return 1;
+        }
+        if (key == SDLK_DOWN) {
+            if (state->season_idx + cols < count) state->season_idx += cols;
+            else state->season_idx = count - 1;
+            return 1;
+        }
+        if (key == SDLK_LEFT)  { if (state->season_idx > 0)          state->season_idx--; return 1; }
+        if (key == SDLK_RIGHT) { if (state->season_idx < count - 1)  state->season_idx++; return 1; }
 
         if (key == SDLK_RETURN || key == SDLK_SPACE) {
             if (count > 0) {
@@ -956,7 +1038,8 @@ int browser_handle_event(BrowserState *state, const MediaLibrary *lib,
             return 1;
         }
         if (key == SDLK_RCTRL || key == SDLK_TAB) {
-            state->layout = (state->layout + 1) % LAYOUT_COUNT;
+            state->season_layout = (state->season_layout + 1) % LAYOUT_COUNT;
+            state->action = BROWSER_ACTION_LAYOUT_CHANGED;
             return 1;
         }
         if (key == SDLK_PAGEDOWN) {

@@ -24,7 +24,7 @@ TMDB_KEY="${2:-}"
 
 TMDB_SEARCH="http://api.themoviedb.org/3/search/multi"
 TMDB_IMG_BASE="http://image.tmdb.org/t/p/w500"
-TVMAZE_SEARCH="http://api.tvmaze.com/singlesearch/shows"
+TVMAZE_SEARCH="http://api.tvmaze.com/search/shows"
 
 if [ -z "$FOLDER" ]; then
     echo "Usage: scrape_covers.sh <folder_path> [tmdb_key]" >&2
@@ -36,10 +36,16 @@ fi
 # Season folder: "Season 1", "Season 01", "season 2", "S01", "s02", etc.
 # -------------------------------------------------------------------------
 name=$(basename "$FOLDER")
+season_num=""
 if echo "$name" | grep -qiE '^(season[ _-]*[0-9]+|s[0-9]{1,2})$'; then
     parent=$(dirname "$FOLDER")
     show=$(basename "$parent")
     echo "Season folder detected: '$name' — using parent name: '$show'"
+    # Extract numeric season number, stripping leading zeros
+    season_num=$(echo "$name" | sed -n 's/^[Ss]eason[[:space:]_-]*0*\([1-9][0-9]*\)$/\1/p')
+    if [ -z "$season_num" ]; then
+        season_num=$(echo "$name" | sed -n 's/^[Ss]0*\([1-9][0-9]*\)$/\1/p')
+    fi
     name="$show"
 fi
 echo "Searching for: $name"
@@ -60,11 +66,13 @@ query=$(urlencode "$name")
 # -------------------------------------------------------------------------
 tmpfile="/tmp/gvu_scrape_$$.json"
 tmpimg="/tmp/gvu_cover_$$.jpg"
+tmpseasons="/tmp/gvu_seasons_$$.json"
 # On any exit (normal or abnormal), clean up temps and ensure the sentinel
 # is always written so GVU never gets stuck showing the progress overlay.
-trap 'rm -f "$tmpfile" "$tmpimg"; [ -f /tmp/gvu_scrape_done ] || echo "error" > /tmp/gvu_scrape_done' EXIT
+trap 'rm -f "$tmpfile" "$tmpimg" "$tmpseasons"; [ -f /tmp/gvu_scrape_done ] || echo "error" > /tmp/gvu_scrape_done' EXIT
 
 cover_url=""
+show_id=""
 
 # -------------------------------------------------------------------------
 # 1. TMDB (primary — requires API key)
@@ -72,7 +80,7 @@ cover_url=""
 if [ -n "$TMDB_KEY" ]; then
     echo "Trying TMDB..."
     url="${TMDB_SEARCH}?api_key=${TMDB_KEY}&query=${query}&page=1"
-    if wget -q --timeout=20 -O "$tmpfile" "$url" 2>/dev/null; then
+    if wget -q -O "$tmpfile" "$url" 2>/dev/null; then
         # Split on commas so each JSON field is on its own line, then extract
         # the first "poster_path" value (skips "null" entries).
         poster=$(tr ',' '\n' < "$tmpfile" \
@@ -92,24 +100,52 @@ fi
 
 # -------------------------------------------------------------------------
 # 2. TVMaze (fallback — no key, TV shows only)
+#    For season folders: fetch season-specific artwork via a two-step lookup
+#    (show search → show ID → seasons endpoint).  Falls back to show art.
 # -------------------------------------------------------------------------
 if [ -z "$cover_url" ]; then
     echo "Trying TVMaze..."
     url="${TVMAZE_SEARCH}?q=${query}"
-    if wget -q --timeout=20 -O "$tmpfile" "$url" 2>/dev/null; then
-        # TVMaze JSON: {...,"image":{"medium":"url","original":"url"},...}
-        orig=$(tr ',' '\n' < "$tmpfile" \
-               | grep '"original"' \
-               | head -1 \
-               | sed 's/.*"original":"\([^"]*\)".*/\1/' || true)
-        # TVMaze image URLs in the JSON are https:// — downgrade to http://
-        # since wget on SpruceOS has no TLS support.
-        orig=$(echo "$orig" | sed 's|^https://|http://|')
-        if [ -n "$orig" ] && [ "$orig" != "null" ]; then
-            cover_url="$orig"
-            echo "TVMaze: found image"
-        else
-            echo "TVMaze: no image in results"
+    if wget -q -O "$tmpfile" "$url" 2>/dev/null; then
+        # Save show-level image URL as fallback before we overwrite tmpfile
+        show_orig=$(tr ',' '\n' < "$tmpfile" \
+                    | grep '"original"' | head -1 \
+                    | sed 's/.*"original":"\([^"]*\)".*/\1/' || true)
+        show_orig=$(echo "$show_orig" | sed 's|^https://|http://|')
+
+        # Extract show ID for season artwork lookup
+        show_id=$(tr ',' '\n' < "$tmpfile" \
+                  | grep '"id"' | head -1 \
+                  | sed 's/[^0-9]*\([0-9]*\).*/\1/' || true)
+
+        # Season-specific artwork (only when in a detected season folder)
+        if [ -n "$season_num" ] && [ -n "$show_id" ]; then
+            echo "TVMaze: fetching season $season_num artwork for show $show_id"
+            seas_url="http://api.tvmaze.com/shows/${show_id}/seasons"
+            if wget -q -O "$tmpfile" "$seas_url" 2>/dev/null; then
+                # Find the season by number, then get its "original" image URL.
+                # Anchor to $ because after tr each field ends at EOL (no trailing chars).
+                # grep -A 20: "number" and "original" are ~13 comma-separated fields apart.
+                orig=$(tr ',' '\n' < "$tmpfile" \
+                       | grep -A 20 '"number":'"$season_num"'$' \
+                       | grep '"original"' | head -1 \
+                       | sed 's/.*"original":"\([^"]*\)".*/\1/' || true)
+                orig=$(echo "$orig" | sed 's|^https://|http://|')
+                if [ -n "$orig" ] && [ "$orig" != "null" ]; then
+                    cover_url="$orig"
+                    echo "TVMaze: found season $season_num artwork"
+                fi
+            fi
+        fi
+
+        # Fall back to show-level artwork if season art was not found
+        if [ -z "$cover_url" ]; then
+            if [ -n "$show_orig" ] && [ "$show_orig" != "null" ]; then
+                cover_url="$show_orig"
+                echo "TVMaze: found show image"
+            else
+                echo "TVMaze: no image in results"
+            fi
         fi
     else
         echo "TVMaze: request failed"
@@ -127,11 +163,61 @@ fi
 
 echo "Downloading: $cover_url"
 dest="${FOLDER}/cover.jpg"
-if wget -q --timeout=30 -O "$tmpimg" "$cover_url" 2>/dev/null; then
+if wget -q -O "$tmpimg" "$cover_url" 2>/dev/null; then
     mv "$tmpimg" "$dest"
     echo "Saved: $dest"
-    # Signal GVU that the scrape is complete
+    # Signal GVU now so the overlay dismisses while season covers scrape
     echo "ok" > /tmp/gvu_scrape_done
+
+    # -------------------------------------------------------------------------
+    # Bulk season cover scraping
+    # When called on a show folder (not a season subfolder), and TVMaze returned
+    # a show ID, fetch individual season artwork for each season subdirectory.
+    # -------------------------------------------------------------------------
+    if [ -z "$season_num" ] && [ -n "$show_id" ]; then
+        echo "Fetching season artwork for show $show_id..."
+        seas_url="http://api.tvmaze.com/shows/${show_id}/seasons"
+        if wget -q -O "$tmpseasons" "$seas_url" 2>/dev/null; then
+            for subdir in "$FOLDER"/*/; do
+                [ -d "$subdir" ] || continue
+                subname=$(basename "${subdir%/}")
+                # Detect season pattern and extract number
+                snum=""
+                if echo "$subname" | grep -qiE '^(season[ _-]*[0-9]+|s[0-9]{1,2})$'; then
+                    snum=$(echo "$subname" | sed -n 's/^[Ss]eason[[:space:]_-]*0*\([1-9][0-9]*\)$/\1/p')
+                    if [ -z "$snum" ]; then
+                        snum=$(echo "$subname" | sed -n 's/^[Ss]0*\([1-9][0-9]*\)$/\1/p')
+                    fi
+                fi
+                [ -z "$snum" ] && continue
+                # Skip if cover already exists
+                if [ -f "${subdir}cover.jpg" ]; then
+                    echo "Season $snum: cover exists, skipping"
+                    continue
+                fi
+                # Find season image URL from seasons JSON
+                orig=$(tr ',' '\n' < "$tmpseasons" \
+                       | grep -A 20 '"number":'"$snum"'$' \
+                       | grep '"original"' | head -1 \
+                       | sed 's/.*"original":"\([^"]*\)".*/\1/' || true)
+                orig=$(echo "$orig" | sed 's|^https://|http://|')
+                if [ -z "$orig" ] || [ "$orig" = "null" ]; then
+                    echo "Season $snum: no artwork found"
+                    continue
+                fi
+                echo "Season $snum: downloading $orig"
+                if wget -q -O "$tmpimg" "$orig" 2>/dev/null; then
+                    mv "$tmpimg" "${subdir}cover.jpg"
+                    echo "Season $snum: saved ${subdir}cover.jpg"
+                else
+                    echo "Season $snum: download failed"
+                fi
+            done
+        else
+            echo "TVMaze: could not fetch seasons list"
+        fi
+    fi
+
     exit 0
 else
     echo "ERROR: Download failed: $cover_url" >&2
