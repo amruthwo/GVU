@@ -12,10 +12,10 @@ void help_draw(SDL_Renderer *r, TTF_Font *font, TTF_Font *font_small,
                const Theme *theme, int win_w, int win_h);
 
 /* -------------------------------------------------------------------------
- * First-run tutorial — 5 slides, shown once on first launch.
+ * First-run tutorial — 6 slides, shown once on first launch.
  * ---------------------------------------------------------------------- */
 
-#define TUTORIAL_SLIDE_COUNT 5
+#define TUTORIAL_SLIDE_COUNT 6
 
 typedef struct {
     int active;   /* 1 while tutorial is on screen */
@@ -67,3 +67,44 @@ void error_draw(SDL_Renderer *r, TTF_Font *font, TTF_Font *font_small,
  * ---------------------------------------------------------------------- */
 void overlay_panel(SDL_Renderer *r, int x, int y, int w, int h,
                    const Theme *theme);
+
+/* -------------------------------------------------------------------------
+ * Subtitle download workflow overlays (A30 / network-capable builds only)
+ * ---------------------------------------------------------------------- */
+
+#define SUB_RESULT_MAX 32
+
+typedef struct {
+    char provider[16];
+    char download_key[256];
+    char display_name[128];
+    char lang[8];
+    int  downloads;
+    int  hi;
+} SubResult;
+
+/* Language list exposed so main.c can map selection index → ISO code. */
+#define LANG_COUNT 10
+extern const char * const LANG_CODES[LANG_COUNT];
+extern const char * const LANG_LABELS[LANG_COUNT];
+
+/* Language picker — sel is the highlighted row (0..LANG_COUNT-1). */
+void lang_pick_draw(SDL_Renderer *r, TTF_Font *font, TTF_Font *font_small,
+                    const Theme *theme, int win_w, int win_h, int sel);
+
+/* Animated "Searching for subtitles…" status panel. */
+void sub_searching_draw(SDL_Renderer *r, TTF_Font *font,
+                        const Theme *theme, int win_w, int win_h);
+
+/* Animated "Downloading subtitle…" status panel. */
+void sub_downloading_draw(SDL_Renderer *r, TTF_Font *font,
+                          const Theme *theme, int win_w, int win_h);
+
+/* Number of result rows visible at once. */
+#define SUB_RESULTS_VIS 5
+
+/* Results list. sel = highlighted row, scroll = first visible row index.
+   Shows a "No results" panel when count == 0. */
+void sub_results_draw(SDL_Renderer *r, TTF_Font *font, TTF_Font *font_small,
+                      const Theme *theme, int win_w, int win_h,
+                      const SubResult *results, int count, int sel, int scroll);

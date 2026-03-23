@@ -59,6 +59,13 @@ void config_set_layout(int l);
 int  config_get_season_layout(void);
 void config_set_season_layout(int l);
 
+/* Subtitle language preference (e.g. "en", "es"; empty = not set). */
+const char *config_sub_lang(void);
+void        config_set_sub_lang(const char *lang);
+
+/* SubDL API key (empty string if not set). */
+const char *config_subdl_key(void);
+
 /* -------------------------------------------------------------------------
  * gvu.conf
  * ---------------------------------------------------------------------- */
