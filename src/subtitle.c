@@ -157,10 +157,13 @@ void sub_toggle(SubCtx *ctx) {
 
 const SubEntry *sub_get(const SubCtx *ctx, double pos_sec) {
     if (!ctx->enabled || !ctx->entries || ctx->count == 0) return NULL;
+    /* Apply delay: subtract so a positive delay shifts entries to appear later
+       relative to the video clock. */
+    double adj = pos_sec - ctx->delay_sec;
     /* Linear scan — typical SRT has < 1000 entries; negligible on ARMv7 */
     for (int i = 0; i < ctx->count; i++) {
-        if (pos_sec >= ctx->entries[i].start_sec &&
-            pos_sec <  ctx->entries[i].end_sec)
+        if (adj >= ctx->entries[i].start_sec &&
+            adj <  ctx->entries[i].end_sec)
             return &ctx->entries[i];
     }
     return NULL;

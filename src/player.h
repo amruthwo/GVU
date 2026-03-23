@@ -110,6 +110,9 @@ void player_cycle_audio(Player *p);
 /* Toggle subtitle display on/off. Shows a toast with the new state. */
 void player_toggle_subs(Player *p);
 
+/* Shift subtitle timing by delta_sec (+ = subtitles appear later). Shows toast. */
+void player_sub_adjust(Player *p, double delta_sec);
+
 void player_close (Player *p);
 
 /* Render the current frame (or audio-only screen) to the window. */
