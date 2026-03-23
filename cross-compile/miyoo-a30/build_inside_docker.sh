@@ -36,8 +36,13 @@ copy_lib() {
     done
     # Already copied?
     [ -f "$BUILD/libs32/$SONAME" ] && return
-    # Find the real file
+    # Find the real file — try versioned name first, then unversioned base
     REAL=$(readlink -f "$ARMHF_LIB/$SONAME" 2>/dev/null)
+    if [ -z "$REAL" ] || [ ! -f "$REAL" ]; then
+        # e.g. libz.so.1 → try libz.so
+        BASE=$(echo "$SONAME" | sed 's/\.so\..*/\.so/')
+        REAL=$(readlink -f "$ARMHF_LIB/$BASE" 2>/dev/null)
+    fi
     if [ -z "$REAL" ] || [ ! -f "$REAL" ]; then
         echo "  WARNING: $SONAME not found in $ARMHF_LIB"
         return
