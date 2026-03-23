@@ -47,13 +47,17 @@ cp -v "$BUILD/libs32/"* "$APP/libs32/"
 # Resources
 cp -v "$REPO_ROOT/resources/fonts/DejaVuSans.ttf"  "$APP/resources/fonts/"
 cp -v "$REPO_ROOT/resources/default_cover.png"      "$APP/resources/"
-cp -v "$REPO_ROOT/resources/scrape_covers.sh"       "$APP/resources/"
-cp -v "$REPO_ROOT/resources/clear_covers.sh"        "$APP/resources/"
-chmod +x "$APP/resources/scrape_covers.sh" "$APP/resources/clear_covers.sh"
+cp -v "$REPO_ROOT/resources/scrape_covers.sh"           "$APP/resources/"
+cp -v "$REPO_ROOT/resources/clear_covers.sh"            "$APP/resources/"
+cp -v "$REPO_ROOT/resources/fetch_subtitles.py"         "$APP/resources/"
+cp -v "$REPO_ROOT/resources/clear_subtitle_pref.sh"     "$APP/resources/"
+chmod +x "$APP/resources/scrape_covers.sh" \
+         "$APP/resources/clear_covers.sh" \
+         "$APP/resources/clear_subtitle_pref.sh"
 
 # gvu.conf — written fresh each package so it never lives in the repo.
-# TMDB key is read from .tmdb_key in the repo root (gitignored).
-# Users who build from source get TVMaze-only; release zips include the key.
+# API keys are read from .<name>_key files in the repo root (gitignored).
+# Users who build from source without key files get reduced functionality.
 printf 'theme = SPRUCE\n' > "$APP/gvu.conf"
 TMDB_KEY_FILE="$REPO_ROOT/.tmdb_key"
 if [ -f "$TMDB_KEY_FILE" ]; then
@@ -64,6 +68,16 @@ if [ -f "$TMDB_KEY_FILE" ]; then
     fi
 else
     echo "TMDB key: not found (.tmdb_key missing) — TVMaze-only package"
+fi
+SUBDL_KEY_FILE="$REPO_ROOT/.subdl_key"
+if [ -f "$SUBDL_KEY_FILE" ]; then
+    KEY=$(tr -d '[:space:]' < "$SUBDL_KEY_FILE")
+    if [ -n "$KEY" ]; then
+        printf 'subdl_key = %s\n' "$KEY" >> "$APP/gvu.conf"
+        echo "SubDL key: included from .subdl_key"
+    fi
+else
+    echo "SubDL key: not found (.subdl_key missing) — Podnapisi-only subtitle search"
 fi
 
 OUTFILE="$REPO_ROOT/build/gvu_spruce_a30_v${VERSION}.zip"

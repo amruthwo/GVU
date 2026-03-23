@@ -197,16 +197,19 @@ void help_draw(SDL_Renderer *r, TTF_Font *font, TTF_Font *font_small,
         { "X",                                   "Audio track"      },
         { "SEL",                                 "Mute"             },
         { "\xe2\x86\x91\xe2\x86\x93",            "Brightness"       },
+        { "START",                               "Subtitles"        },
+        /* ←→ = U+2190 U+2192 */
+        { "START+\xe2\x86\x90\xe2\x86\x92",     "Sub sync \xc2\xb1""0.5 s" },
         { "B",                                   "Stop"             },
     };
-    enum { N_BR = 7, N_PB = 9 };
+    enum { N_BR = 7, N_PB = 11 };
 
     draw_dim(r, win_w, win_h);
 
-    /* Panel */
+    /* Panel — tall enough for 11 playback rows */
     int px = sc(20, win_w);
     int pw = win_w - px * 2;
-    int ph = sc_h(300, win_h);
+    int ph = sc_h(320, win_h);
     int py = (win_h - ph) / 2;
     panel_bg(r, px, py, pw, ph, theme);
 
@@ -327,6 +330,17 @@ static const Slide SLIDES[TUTORIAL_SLIDE_COUNT] = {
             { NULL, "Progress is saved automatically." },
         },
         3, "Continue"
+    },
+    {
+        "Subtitles",
+        {
+            { "START",   "Toggle subtitles on / off" },
+            { NULL,      "Auto-loads a matching .srt file."       },
+            /* ←→ = U+2190 U+2192 */
+            { NULL,      "START + \xe2\x86\x90\xe2\x86\x92 adjusts sync." },
+            { "START+X", "Search or re-download subtitles"        },
+        },
+        4, "Continue"
     },
     {
         "That's It!",
@@ -581,6 +595,233 @@ void upnext_draw(SDL_Renderer *r, TTF_Font *font, TTF_Font *font_small,
 /* -------------------------------------------------------------------------
  * Error overlay
  * ---------------------------------------------------------------------- */
+
+/* -------------------------------------------------------------------------
+ * Subtitle workflow overlays
+ * ---------------------------------------------------------------------- */
+
+const char * const LANG_CODES[LANG_COUNT] = {
+    "en", "es", "fr", "de", "pt", "it", "nl", "ja", "ko", "zh"
+};
+const char * const LANG_LABELS[LANG_COUNT] = {
+    "English", "Spanish", "French", "German", "Portuguese",
+    "Italian", "Dutch",   "Japanese", "Korean", "Chinese (Simplified)"
+};
+
+void lang_pick_draw(SDL_Renderer *r, TTF_Font *font, TTF_Font *font_small,
+                    const Theme *theme, int win_w, int win_h, int sel) {
+    draw_dim(r, win_w, win_h);
+
+    int px = sc(40, win_w);
+    int pw = win_w - px * 2;
+    int fsy = TTF_FontHeight(font_small);
+    int row_h = fsy * 11 / 7;
+    int ph = TTF_FontHeight(font) + 6 + 8    /* title + gap */
+           + LANG_COUNT * row_h + 8           /* rows */
+           + sc_h(34, win_h);                 /* footer */
+    int py = (win_h - ph) / 2;
+    panel_bg(r, px, py, pw, ph, theme);
+
+    /* Title */
+    int fy = TTF_FontHeight(font);
+    int ty = py + 10;
+    text_ctr(r, font, "Subtitle Language",
+             win_w / 2, ty,
+             theme->text.r, theme->text.g, theme->text.b);
+    int divy = ty + fy + 6;
+    divider(r, px + 8, divy, pw - 16, theme);
+
+    /* Language rows */
+    int ry = divy + 8;
+    for (int i = 0; i < LANG_COUNT; i++) {
+        int row_y = ry + i * row_h;
+        if (i == sel) {
+            /* Highlight bar */
+            SDL_SetRenderDrawColor(r,
+                theme->highlight_bg.r, theme->highlight_bg.g,
+                theme->highlight_bg.b, 255);
+            SDL_Rect bar = { px + 6, row_y, pw - 12, row_h };
+            SDL_RenderFillRect(r, &bar);
+        }
+        Uint8 tr = (i == sel) ? theme->highlight_text.r : theme->text.r;
+        Uint8 tg = (i == sel) ? theme->highlight_text.g : theme->text.g;
+        Uint8 tb = (i == sel) ? theme->highlight_text.b : theme->text.b;
+        int label_y = row_y + (row_h - fsy) / 2;
+        text_ctr(r, font_small, LANG_LABELS[i], win_w / 2, label_y, tr, tg, tb);
+    }
+
+    /* Footer */
+    int hd = py + ph - sc_h(34, win_h);
+    divider(r, px + 8, hd, pw - 16, theme);
+    static const HintItem hints[] = {
+        { "A", "Select" },
+        { "B", "Cancel" },
+    };
+    int glyph_h = gh(font_small);
+    int total_w = hintbar_item_width(font_small, &hints[0], glyph_h)
+                + ig(font_small)
+                + hintbar_item_width(font_small, &hints[1], glyph_h);
+    hintbar_draw_items(r, font_small, hints, 2, theme,
+                       (win_w - total_w) / 2, hd + sc(5, win_h), sc_h(26, win_h));
+}
+
+/* Shared animated status panel (searching / downloading) */
+static void sub_status_draw(SDL_Renderer *r, TTF_Font *font,
+                             const Theme *theme, int win_w, int win_h,
+                             const char *label) {
+    draw_dim(r, win_w, win_h);
+
+    int pw = win_w * 3 / 4;
+    int ph = win_h / 5;
+    int px = (win_w - pw) / 2;
+    int py = (win_h - ph) / 2;
+    panel_bg(r, px, py, pw, ph, theme);
+
+    /* Animated dots */
+    int ndots = 1 + (int)(SDL_GetTicks() / 500) % 3;
+    char msg[64];
+    snprintf(msg, sizeof(msg), "%s%.*s", label, ndots, "...");
+    SDL_Color tc = { theme->text.r, theme->text.g, theme->text.b, 255 };
+    SDL_Surface *ts = TTF_RenderUTF8_Blended(font, msg, tc);
+    if (ts) {
+        SDL_Texture *tt = SDL_CreateTextureFromSurface(r, ts);
+        if (tt) {
+            SDL_Rect tr = { px + (pw - ts->w) / 2,
+                            py + (ph - ts->h) / 2, ts->w, ts->h };
+            SDL_RenderCopy(r, tt, NULL, &tr);
+            SDL_DestroyTexture(tt);
+        }
+        SDL_FreeSurface(ts);
+    }
+    SDL_Color sc2 = { theme->secondary.r, theme->secondary.g, theme->secondary.b, 255 };
+    SDL_Surface *cs = TTF_RenderUTF8_Blended(font, "B: Cancel", sc2);
+    if (cs) {
+        SDL_Texture *ct = SDL_CreateTextureFromSurface(r, cs);
+        if (ct) {
+            SDL_Rect cr = { px + (pw - cs->w) / 2,
+                            py + ph - cs->h - 4, cs->w, cs->h };
+            SDL_RenderCopy(r, ct, NULL, &cr);
+            SDL_DestroyTexture(ct);
+        }
+        SDL_FreeSurface(cs);
+    }
+}
+
+void sub_searching_draw(SDL_Renderer *r, TTF_Font *font,
+                        const Theme *theme, int win_w, int win_h) {
+    sub_status_draw(r, font, theme, win_w, win_h, "Searching for subtitles");
+}
+
+void sub_downloading_draw(SDL_Renderer *r, TTF_Font *font,
+                          const Theme *theme, int win_w, int win_h) {
+    sub_status_draw(r, font, theme, win_w, win_h, "Downloading subtitle");
+}
+
+void sub_results_draw(SDL_Renderer *r, TTF_Font *font, TTF_Font *font_small,
+                      const Theme *theme, int win_w, int win_h,
+                      const SubResult *results, int count, int sel, int scroll) {
+    draw_dim(r, win_w, win_h);
+
+    int px  = sc(20, win_w);
+    int pw  = win_w - px * 2;
+    int fy  = TTF_FontHeight(font);
+    int fsy = TTF_FontHeight(font_small);
+    int row_h = fsy * 12 / 7;
+    int vis   = (count < SUB_RESULTS_VIS) ? count : SUB_RESULTS_VIS;
+    if (vis < 1) vis = 1; /* at least one row for "no results" */
+    int ph = fy + 6 + 8          /* title + gap */
+           + vis * row_h + 8     /* result rows */
+           + sc_h(34, win_h);    /* footer */
+    int py = (win_h - ph) / 2;
+    panel_bg(r, px, py, pw, ph, theme);
+
+    /* Title */
+    char title[32];
+    snprintf(title, sizeof(title), "Subtitle Results (%d)", count);
+    int ty = py + 10;
+    text_ctr(r, font, count > 0 ? title : "No Results Found",
+             win_w / 2, ty,
+             theme->text.r, theme->text.g, theme->text.b);
+    int divy = ty + fy + 6;
+    divider(r, px + 8, divy, pw - 16, theme);
+
+    int ry = divy + 8;
+    if (count == 0) {
+        text_ctr(r, font_small, "Try a different search or check your connection.",
+                 win_w / 2, ry + row_h / 2 - fsy / 2,
+                 theme->secondary.r, theme->secondary.g, theme->secondary.b);
+    }
+
+    /* Scrollbar hint — faint tick marks */
+    if (count > SUB_RESULTS_VIS) {
+        int bar_x = px + pw - 6;
+        int bar_h = vis * row_h;
+        SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
+        SDL_SetRenderDrawColor(r, theme->secondary.r, theme->secondary.g,
+                               theme->secondary.b, 60);
+        SDL_Rect bar_bg = { bar_x, ry, 4, bar_h };
+        SDL_RenderFillRect(r, &bar_bg);
+        int thumb_h = bar_h * vis / count;
+        if (thumb_h < 6) thumb_h = 6;
+        int thumb_y = ry + bar_h * scroll / count;
+        SDL_SetRenderDrawColor(r, theme->secondary.r, theme->secondary.g,
+                               theme->secondary.b, 180);
+        SDL_Rect thumb = { bar_x, thumb_y, 4, thumb_h };
+        SDL_RenderFillRect(r, &thumb);
+        SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_NONE);
+    }
+
+    /* Result rows */
+    int max_w = pw - 20 - (count > SUB_RESULTS_VIS ? 10 : 0);
+    for (int i = 0; i < vis; i++) {
+        int idx = scroll + i;
+        if (idx >= count) break;
+        const SubResult *sr = &results[idx];
+        int row_y = ry + i * row_h;
+        if (idx == sel) {
+            SDL_SetRenderDrawColor(r,
+                theme->highlight_bg.r, theme->highlight_bg.g,
+                theme->highlight_bg.b, 255);
+            SDL_Rect bar = { px + 6, row_y, pw - 12 - (count > SUB_RESULTS_VIS ? 8 : 0), row_h };
+            SDL_RenderFillRect(r, &bar);
+        }
+        Uint8 tr = (idx == sel) ? theme->highlight_text.r : theme->text.r;
+        Uint8 tg = (idx == sel) ? theme->highlight_text.g : theme->text.g;
+        Uint8 tb = (idx == sel) ? theme->highlight_text.b : theme->text.b;
+
+        /* Build label: [LANG] name [HI] */
+        char label[160];
+        if (sr->hi)
+            snprintf(label, sizeof(label), "[%s] %s [HI]", sr->lang, sr->display_name);
+        else
+            snprintf(label, sizeof(label), "[%s] %s", sr->lang, sr->display_name);
+
+        draw_text_scroll(r, font_small, label,
+                         px + 10, row_y + (row_h - fsy) / 2, max_w,
+                         tr, tg, tb);
+    }
+
+    /* Footer */
+    int hd = py + ph - sc_h(34, win_h);
+    divider(r, px + 8, hd, pw - 16, theme);
+    if (count > 0) {
+        static const HintItem hints[] = {
+            { "A", "Download" },
+            { "B", "Cancel"   },
+        };
+        int glyph_h = gh(font_small);
+        int total_w = hintbar_item_width(font_small, &hints[0], glyph_h)
+                    + ig(font_small)
+                    + hintbar_item_width(font_small, &hints[1], glyph_h);
+        hintbar_draw_items(r, font_small, hints, 2, theme,
+                           (win_w - total_w) / 2, hd + sc(5, win_h), sc_h(26, win_h));
+    } else {
+        HintItem hint = { "B", "Back" };
+        int hw = hintbar_item_width(font_small, &hint, gh(font_small));
+        hintbar_draw_items(r, font_small, &hint, 1, theme,
+                           (win_w - hw) / 2, hd + sc(5, win_h), sc_h(26, win_h));
+    }
+}
 
 void error_draw(SDL_Renderer *r, TTF_Font *font, TTF_Font *font_small,
                 const Theme *theme, int win_w, int win_h,

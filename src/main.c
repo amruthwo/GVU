@@ -43,6 +43,157 @@ typedef enum {
     MODE_PLAYBACK,
 } AppMode;
 
+#ifdef GVU_A30
+/* -------------------------------------------------------------------------
+ * Subtitle download workflow (A30 only — requires Python + curl on device)
+ * ---------------------------------------------------------------------- */
+
+#define SUB_DONE_FILE    "/tmp/gvu_sub_done"
+#define SUB_RESULTS_FILE "/tmp/gvu_sub_results.txt"
+#define SUB_LOG_FILE     "/tmp/gvu_sub.log"
+
+typedef enum {
+    SUB_NONE = 0,
+    SUB_LANG_PICK,
+    SUB_SEARCHING,
+    SUB_RESULTS,
+    SUB_DOWNLOADING,
+} SubState;
+
+typedef struct {
+    SubState  state;
+    int       from_playback; /* 1 = reload player subtitle when done */
+    char      video_path[1024];
+    char      srt_dest[1024];
+    pid_t     child_pid;
+    SubResult results[SUB_RESULT_MAX];
+    int       result_count;
+    int       result_sel;
+    int       result_scroll;
+    int       lang_sel;      /* selected row in language picker */
+} SubWorkflow;
+
+/* Build the .srt path for a video path (replaces extension with .srt). */
+static void make_srt_dest(const char *video_path, char *buf, int buf_sz) {
+    const char *slash = strrchr(video_path, '/');
+    const char *dot   = strrchr(video_path, '.');
+    if (dot && (!slash || dot > slash)) {
+        int base = (int)(dot - video_path);
+        if (base + 5 <= buf_sz) {
+            memcpy(buf, video_path, (size_t)base);
+            memcpy(buf + base, ".srt", 5);
+            return;
+        }
+    }
+    snprintf(buf, buf_sz, "%s.srt", video_path);
+}
+
+static const char *S_PYTHON     = "/mnt/SDCARD/spruce/bin/python/bin/python3.10";
+static const char *S_PYENV      = "PYTHONHOME=/mnt/SDCARD/spruce/bin/python";
+static const char *S_PATH_ENV   = "PATH=/usr/local/bin:/usr/bin:/bin:/mnt/SDCARD/spruce/bin";
+static const char *S_SCRIPT     = "resources/fetch_subtitles.py";
+
+static void sub_spawn(SubWorkflow *wf, char **argv_buf) {
+    unlink(SUB_DONE_FILE);
+    unlink(SUB_RESULTS_FILE);
+    char *env_buf[] = { (char *)S_PYENV, (char *)S_PATH_ENV, NULL };
+    int logfd = open(SUB_LOG_FILE, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    if (logfd >= 0) {
+        posix_spawn_file_actions_adddup2(&fa, logfd, STDOUT_FILENO);
+        posix_spawn_file_actions_adddup2(&fa, logfd, STDERR_FILENO);
+        posix_spawn_file_actions_addclose(&fa, logfd);
+    }
+    if (posix_spawn(&wf->child_pid, S_PYTHON, &fa, NULL, argv_buf, env_buf) != 0) {
+        perror("posix_spawn subtitle");
+        wf->child_pid = 0;
+    }
+    posix_spawn_file_actions_destroy(&fa);
+    if (logfd >= 0) close(logfd);
+}
+
+static void sub_start_search(SubWorkflow *wf) {
+    char *argv_buf[] = {
+        (char *)S_PYTHON, (char *)S_SCRIPT, "search",
+        wf->video_path,
+        (char *)config_subdl_key(),
+        (char *)config_sub_lang(),
+        NULL
+    };
+    sub_spawn(wf, argv_buf);
+    wf->state = SUB_SEARCHING;
+}
+
+static void sub_start_download(SubWorkflow *wf) {
+    SubResult *sr = &wf->results[wf->result_sel];
+    char *argv_buf[] = {
+        (char *)S_PYTHON, (char *)S_SCRIPT, "download",
+        sr->provider, sr->download_key, wf->srt_dest,
+        NULL
+    };
+    sub_spawn(wf, argv_buf);
+    wf->state = SUB_DOWNLOADING;
+}
+
+/* Trigger the subtitle workflow for a given video file.
+   force=1 deletes any existing sidecar first. from_playback=1 reloads
+   player subtitle on completion. Returns 0 on success, -1 if workflow
+   is already active or path is empty. */
+static int sub_workflow_trigger(SubWorkflow *wf, const char *video_path,
+                                int force, int from_playback) {
+    if (wf->state != SUB_NONE) return -1;
+    if (!video_path || !video_path[0]) return -1;
+
+    memset(wf, 0, sizeof(*wf));
+    strncpy(wf->video_path, video_path, sizeof(wf->video_path) - 1);
+    wf->from_playback = from_playback;
+    make_srt_dest(video_path, wf->srt_dest, sizeof(wf->srt_dest));
+
+    if (force)
+        unlink(wf->srt_dest);
+
+    /* If no language saved yet, show the picker first */
+    if (!config_sub_lang()[0]) {
+        wf->state    = SUB_LANG_PICK;
+        wf->lang_sel = 0;
+    } else {
+        sub_start_search(wf);
+    }
+    return 0;
+}
+
+/* Parse one pipe-delimited line from the results file into sr.
+   Returns 1 on success. */
+static int parse_result_line(const char *line, SubResult *sr) {
+    char tmp[512];
+    strncpy(tmp, line, sizeof(tmp) - 1);
+    tmp[sizeof(tmp) - 1] = '\0';
+    /* Strip trailing newline */
+    int l = (int)strlen(tmp);
+    while (l > 0 && (tmp[l-1] == '\n' || tmp[l-1] == '\r')) tmp[--l] = '\0';
+
+    char *p = tmp;
+    char *fields[6];
+    for (int i = 0; i < 6; i++) {
+        fields[i] = p;
+        char *bar = strchr(p, '|');
+        if (i < 5) {
+            if (!bar) return 0;
+            *bar = '\0';
+            p    = bar + 1;
+        }
+    }
+    strncpy(sr->provider,     fields[0], sizeof(sr->provider)     - 1);
+    strncpy(sr->download_key, fields[1], sizeof(sr->download_key) - 1);
+    strncpy(sr->display_name, fields[2], sizeof(sr->display_name) - 1);
+    strncpy(sr->lang,         fields[3], sizeof(sr->lang)         - 1);
+    sr->downloads = atoi(fields[4]);
+    sr->hi        = atoi(fields[5]);
+    return 1;
+}
+#endif /* GVU_A30 */
+
 /* Navigate the browser to the folder/file that contains path. */
 static void navigate_to_file(BrowserState *state, const MediaLibrary *lib,
                                const char *file_path) {
@@ -244,9 +395,16 @@ int main(int argc, char *argv[]) {
     int      play_folder_idx  = 0;
     int      play_file_idx    = 0;
     int      play_season_idx  = -1;
-    /* START hold-modifier state for subtitle sync (MODE_PLAYBACK only) */
-    int      start_held            = 0;
+    /* START hold-modifier state for subtitle sync / subtitle workflow */
+    int      start_held             = 0;
     int      start_used_as_modifier = 0;
+#ifdef GVU_A30
+    SubWorkflow sub_wf;
+    memset(&sub_wf, 0, sizeof(sub_wf));
+    /* Download result toast */
+    char     sub_toast_msg[64]  = {0};
+    Uint32   sub_toast_hide_at  = 0;
+#endif
 #ifdef GVU_A30
     /* Sleep/wake detection: track SDL_GetTicks gap between frames.
        A gap > 2s while playing means the device woke from sleep. */
@@ -400,6 +558,54 @@ int main(int argc, char *argv[]) {
                 continue;
             }
 
+#ifdef GVU_A30
+            /* Subtitle workflow intercepts all input when active */
+            if (sub_wf.state != SUB_NONE) {
+                if (ev.type == SDL_KEYDOWN) {
+                    SDL_Keycode sk = ev.key.keysym.sym;
+                    if (sub_wf.state == SUB_LANG_PICK) {
+                        if (sk == SDLK_UP && sub_wf.lang_sel > 0)
+                            sub_wf.lang_sel--;
+                        else if (sk == SDLK_DOWN && sub_wf.lang_sel < LANG_COUNT - 1)
+                            sub_wf.lang_sel++;
+                        else if (sk == SDLK_SPACE || sk == SDLK_RETURN) {
+                            config_set_sub_lang(LANG_CODES[sub_wf.lang_sel]);
+                            config_save("gvu.conf");
+                            sub_start_search(&sub_wf);
+                        } else if (sk == SDLK_LCTRL || sk == SDLK_BACKSPACE) {
+                            sub_wf.state = SUB_NONE;
+                        }
+                    } else if (sub_wf.state == SUB_RESULTS) {
+                        int max_vis = SUB_RESULTS_VIS;
+                        if (sk == SDLK_UP && sub_wf.result_sel > 0) {
+                            sub_wf.result_sel--;
+                            if (sub_wf.result_sel < sub_wf.result_scroll)
+                                sub_wf.result_scroll = sub_wf.result_sel;
+                        } else if (sk == SDLK_DOWN &&
+                                   sub_wf.result_sel < sub_wf.result_count - 1) {
+                            sub_wf.result_sel++;
+                            if (sub_wf.result_sel >= sub_wf.result_scroll + max_vis)
+                                sub_wf.result_scroll = sub_wf.result_sel - max_vis + 1;
+                        } else if ((sk == SDLK_SPACE || sk == SDLK_RETURN) &&
+                                   sub_wf.result_count > 0) {
+                            sub_start_download(&sub_wf);
+                        } else if (sk == SDLK_LCTRL || sk == SDLK_BACKSPACE) {
+                            sub_wf.state = SUB_NONE;
+                        }
+                    } else if (sub_wf.state == SUB_SEARCHING ||
+                               sub_wf.state == SUB_DOWNLOADING) {
+                        if (sk == SDLK_LCTRL || sk == SDLK_BACKSPACE) {
+                            if (sub_wf.child_pid > 0)
+                                kill(sub_wf.child_pid, SIGTERM);
+                            sub_wf.state = SUB_NONE;
+                            unlink(SUB_DONE_FILE);
+                        }
+                    }
+                }
+                continue;
+            }
+#endif
+
             if (mode == MODE_BROWSER) {
 #ifdef GVU_A30
                 /* Scrape confirmation: intercept A (confirm) and B (cancel) */
@@ -453,9 +659,72 @@ int main(int argc, char *argv[]) {
                     continue;
                 }
 #endif
-                /* X button / Shift → open history page */
+#ifdef GVU_A30
+                /* In VIEW_FILES, START (SDLK_RETURN) triggers subtitle workflow.
+                   Use the same deferred-modifier pattern as playback:
+                   - tap START → search (if sidecar absent) or toggle existing
+                   - START+X  → force re-download (delete sidecar) */
+                if (state.view == VIEW_FILES) {
+                    if (ev.type == SDL_KEYDOWN &&
+                            ev.key.keysym.sym == SDLK_RETURN && !ev.key.repeat) {
+                        start_held = 1;
+                        start_used_as_modifier = 0;
+                        continue;
+                    }
+                    if (ev.type == SDL_KEYUP && ev.key.keysym.sym == SDLK_RETURN) {
+                        int was_held = start_held;
+                        start_held = 0;
+                        if (was_held && !start_used_as_modifier) {
+                            /* Tap: search for the selected file */
+                            const MediaFolder *bfol = &lib.folders[state.folder_idx];
+                            const VideoFile *bfiles;
+                            int bcount;
+                            if (bfol->is_show && state.season_idx >= 0 &&
+                                    state.season_idx < bfol->season_count) {
+                                bfiles = bfol->seasons[state.season_idx].files;
+                                bcount = bfol->seasons[state.season_idx].file_count;
+                            } else {
+                                bfiles = bfol->files;
+                                bcount = bfol->file_count;
+                            }
+                            if (state.selected >= 0 && state.selected < bcount)
+                                sub_workflow_trigger(&sub_wf,
+                                                     bfiles[state.selected].path,
+                                                     0, 0);
+                        }
+                        start_used_as_modifier = 0;
+                        continue;
+                    }
+                    /* START+X → force re-download */
+                    if (ev.type == SDL_KEYDOWN && start_held &&
+                            ev.key.keysym.sym == SDLK_LSHIFT) {
+                        start_used_as_modifier = 1;
+                        const MediaFolder *bfol = &lib.folders[state.folder_idx];
+                        const VideoFile *bfiles;
+                        int bcount;
+                        if (bfol->is_show && state.season_idx >= 0 &&
+                                state.season_idx < bfol->season_count) {
+                            bfiles = bfol->seasons[state.season_idx].files;
+                            bcount = bfol->seasons[state.season_idx].file_count;
+                        } else {
+                            bfiles = bfol->files;
+                            bcount = bfol->file_count;
+                        }
+                        if (state.selected >= 0 && state.selected < bcount)
+                            sub_workflow_trigger(&sub_wf,
+                                                 bfiles[state.selected].path,
+                                                 1, 0);
+                        continue;
+                    }
+                }
+#endif
+                /* X button / Shift → open history page (suppress if START is held) */
                 if (ev.type == SDL_KEYDOWN &&
-                    ev.key.keysym.sym == SDLK_LSHIFT) {
+                    ev.key.keysym.sym == SDLK_LSHIFT
+#ifdef GVU_A30
+                    && !start_held
+#endif
+                ) {
                     history_load(&history);
                     mode = MODE_HISTORY;
                     break;
@@ -651,7 +920,7 @@ int main(int argc, char *argv[]) {
                         break; /* don't fall into the switch below */
                     }
 
-                    /* D-pad while START is held → subtitle sync adjustment */
+                    /* D-pad / X while START is held → sub sync or re-download */
                     if (start_held) {
                         int consumed = 1;
                         switch (ev.key.keysym.sym) {
@@ -659,6 +928,11 @@ int main(int argc, char *argv[]) {
                             case SDLK_RIGHT: player_sub_adjust(&player, +0.5); break;
                             case SDLK_UP:    player_sub_adjust(&player, +5.0); break;
                             case SDLK_DOWN:  player_sub_adjust(&player, -5.0); break;
+#ifdef GVU_A30
+                            case SDLK_LSHIFT: /* X — force re-download subtitles */
+                                sub_workflow_trigger(&sub_wf, player.path, 1, 1);
+                                break;
+#endif
                             default: consumed = 0; break;
                         }
                         if (consumed) {
@@ -939,6 +1213,71 @@ int main(int argc, char *argv[]) {
         }
 #endif
 
+#ifdef GVU_A30
+        /* Poll for subtitle search / download completion */
+        if ((sub_wf.state == SUB_SEARCHING || sub_wf.state == SUB_DOWNLOADING) &&
+                access(SUB_DONE_FILE, F_OK) == 0) {
+            FILE *df = fopen(SUB_DONE_FILE, "r");
+            char done_msg[256] = {0};
+            if (df) { fgets(done_msg, sizeof(done_msg), df); fclose(df); }
+            unlink(SUB_DONE_FILE);
+            /* Trim trailing whitespace */
+            int dl = (int)strlen(done_msg);
+            while (dl > 0 && (done_msg[dl-1] == '\n' || done_msg[dl-1] == '\r'
+                               || done_msg[dl-1] == ' '))
+                done_msg[--dl] = '\0';
+
+            int is_ok = (strncmp(done_msg, "ok", 2) == 0);
+            if (sub_wf.state == SUB_SEARCHING) {
+                if (is_ok) {
+                    /* Load results file */
+                    sub_wf.result_count  = 0;
+                    sub_wf.result_sel    = 0;
+                    sub_wf.result_scroll = 0;
+                    FILE *rf = fopen(SUB_RESULTS_FILE, "r");
+                    if (rf) {
+                        char line[512];
+                        while (fgets(line, sizeof(line), rf) &&
+                               sub_wf.result_count < SUB_RESULT_MAX) {
+                            SubResult *sr = &sub_wf.results[sub_wf.result_count];
+                            if (parse_result_line(line, sr))
+                                sub_wf.result_count++;
+                        }
+                        fclose(rf);
+                    }
+                    sub_wf.state = SUB_RESULTS; /* show list even if count==0 */
+                } else {
+                    fprintf(stderr, "subtitle search: %s\n", done_msg);
+                    sub_wf.state = SUB_NONE;
+                    snprintf(sub_toast_msg, sizeof(sub_toast_msg),
+                             "No subtitles found");
+                    sub_toast_hide_at = SDL_GetTicks() + 2500;
+                }
+            } else { /* SUB_DOWNLOADING */
+                sub_wf.state = SUB_NONE;
+                if (is_ok) {
+                    if (sub_wf.from_playback) {
+                        sub_free(&player.subtitle);
+                        sub_load(&player.subtitle, player.path);
+                    }
+                    snprintf(sub_toast_msg, sizeof(sub_toast_msg),
+                             "Subtitle downloaded");
+                } else {
+                    fprintf(stderr, "subtitle download: %s\n", done_msg);
+                    snprintf(sub_toast_msg, sizeof(sub_toast_msg),
+                             "Download failed");
+                }
+                sub_toast_hide_at = SDL_GetTicks() + 2500;
+                if (sub_wf.from_playback && mode == MODE_PLAYBACK) {
+                    player.sub_osd_visible = 1;
+                    strncpy(player.sub_osd_label, sub_toast_msg,
+                            sizeof(player.sub_osd_label) - 1);
+                    player.sub_osd_hide_at = SDL_GetTicks() + 2500;
+                }
+            }
+        }
+#endif
+
         /* Render */
         int sbar_h = statusbar_height(win_w);
         if (mode == MODE_BROWSER || mode == MODE_RESUME_PROMPT ||
@@ -1113,6 +1452,46 @@ int main(int argc, char *argv[]) {
                 SDL_FreeSurface(cs);
             }
         }
+#endif
+
+#ifdef GVU_A30
+        /* Subtitle workflow overlays */
+        if (sub_wf.state == SUB_LANG_PICK)
+            lang_pick_draw(renderer, font, font_small, theme_get(), win_w, win_h,
+                           sub_wf.lang_sel);
+        else if (sub_wf.state == SUB_SEARCHING)
+            sub_searching_draw(renderer, font, theme_get(), win_w, win_h);
+        else if (sub_wf.state == SUB_RESULTS)
+            sub_results_draw(renderer, font, font_small, theme_get(), win_w, win_h,
+                             sub_wf.results, sub_wf.result_count,
+                             sub_wf.result_sel, sub_wf.result_scroll);
+        else if (sub_wf.state == SUB_DOWNLOADING)
+            sub_downloading_draw(renderer, font, theme_get(), win_w, win_h);
+
+        /* Subtitle download result toast (browser mode) */
+        if (sub_toast_msg[0] && SDL_GetTicks() < sub_toast_hide_at &&
+                mode != MODE_PLAYBACK) {
+            const Theme *t = theme_get();
+            int tw = 0, th = 0;
+            TTF_SizeUTF8(font_small, sub_toast_msg, &tw, &th);
+            int tpw = tw + 24, tph = th + 12;
+            int tpx = (win_w - tpw) / 2, tpy = win_h / 2 - tph / 2;
+            overlay_panel(renderer, tpx, tpy, tpw, tph, t);
+            SDL_Color tc = { t->text.r, t->text.g, t->text.b, 255 };
+            SDL_Surface *ts = TTF_RenderUTF8_Blended(font_small, sub_toast_msg, tc);
+            if (ts) {
+                SDL_Texture *tt = SDL_CreateTextureFromSurface(renderer, ts);
+                if (tt) {
+                    SDL_Rect tr = { tpx + (tpw - ts->w) / 2,
+                                    tpy + (tph - ts->h) / 2, ts->w, ts->h };
+                    SDL_RenderCopy(renderer, tt, NULL, &tr);
+                    SDL_DestroyTexture(tt);
+                }
+                SDL_FreeSurface(ts);
+            }
+        }
+        if (SDL_GetTicks() >= sub_toast_hide_at)
+            sub_toast_msg[0] = '\0';
 #endif
 
         SDL_RenderPresent(renderer);

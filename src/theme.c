@@ -90,6 +90,8 @@ static int  g_firstrun_done = 0;
 static char g_tmdb_key[128] = "";
 static int  g_layout        = 0;  /* 0=LARGE, 1=SMALL, 2=LIST */
 static int  g_season_layout = 0;
+static char g_sub_lang[16]  = "";  /* ISO 639-1, e.g. "en" */
+static char g_subdl_key[128]= "";
 
 const Theme *theme_get(void) {
     return &THEMES[g_theme_idx];
@@ -113,6 +115,13 @@ void config_set_layout(int l)       { g_layout = l; }
 int  config_get_season_layout(void) { return g_season_layout; }
 void config_set_season_layout(int l){ g_season_layout = l; }
 
+const char *config_sub_lang(void) { return g_sub_lang; }
+void config_set_sub_lang(const char *lang) {
+    strncpy(g_sub_lang, lang ? lang : "", sizeof(g_sub_lang) - 1);
+    g_sub_lang[sizeof(g_sub_lang) - 1] = '\0';
+}
+const char *config_subdl_key(void) { return g_subdl_key; }
+
 void config_save(const char *path) {
     FILE *f = fopen(path, "w");
     if (!f) return;
@@ -122,6 +131,10 @@ void config_save(const char *path) {
         fprintf(f, "tmdb_key = %s\n", g_tmdb_key);
     fprintf(f, "layout = %d\n", g_layout);
     fprintf(f, "season_layout = %d\n", g_season_layout);
+    if (g_sub_lang[0])
+        fprintf(f, "sub_lang = %s\n", g_sub_lang);
+    if (g_subdl_key[0])
+        fprintf(f, "subdl_key = %s\n", g_subdl_key);
     fclose(f);
 }
 
@@ -177,6 +190,12 @@ void config_load(const char *path) {
         } else if (strcasecmp(key, "season_layout") == 0) {
             int v = atoi(val);
             if (v >= 0 && v <= 2) g_season_layout = v;
+        } else if (strcasecmp(key, "sub_lang") == 0) {
+            strncpy(g_sub_lang, val, sizeof(g_sub_lang) - 1);
+            g_sub_lang[sizeof(g_sub_lang) - 1] = '\0';
+        } else if (strcasecmp(key, "subdl_key") == 0) {
+            strncpy(g_subdl_key, val, sizeof(g_subdl_key) - 1);
+            g_subdl_key[sizeof(g_subdl_key) - 1] = '\0';
         }
     }
     fclose(f);
