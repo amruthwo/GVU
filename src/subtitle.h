@@ -13,7 +13,8 @@ typedef struct {
 typedef struct {
     SubEntry *entries;
     int       count;
-    int       enabled;    /* 1 = subtitles on, 0 = off */
+    int       enabled;      /* 1 = subtitles on, 0 = off */
+    double    delay_sec;    /* offset added to pos_sec before lookup; + = later, - = earlier */
 } SubCtx;
 
 /* Load .srt file corresponding to video_path (replaces extension with .srt).

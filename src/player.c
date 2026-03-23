@@ -200,6 +200,18 @@ void player_toggle_subs(Player *p) {
     p->sub_osd_hide_at = SDL_GetTicks() + 1500;
 }
 
+void player_sub_adjust(Player *p, double delta_sec) {
+    p->subtitle.delay_sec += delta_sec;
+    double d = p->subtitle.delay_sec;
+    if (d == 0.0)
+        snprintf(p->sub_osd_label, sizeof(p->sub_osd_label), "Sub delay: 0.0s");
+    else
+        snprintf(p->sub_osd_label, sizeof(p->sub_osd_label),
+                 "Sub delay: %+.1fs", d);
+    p->sub_osd_visible = 1;
+    p->sub_osd_hide_at = SDL_GetTicks() + 1500;
+}
+
 void player_seek(Player *p, double delta_sec) {
     if (p->state == PLAYER_STOPPED) return;
     double current = audio_get_clock(&p->audio);

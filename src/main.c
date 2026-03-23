@@ -244,6 +244,9 @@ int main(int argc, char *argv[]) {
     int      play_folder_idx  = 0;
     int      play_file_idx    = 0;
     int      play_season_idx  = -1;
+    /* START hold-modifier state for subtitle sync (MODE_PLAYBACK only) */
+    int      start_held            = 0;
+    int      start_used_as_modifier = 0;
 #ifdef GVU_A30
     /* Sleep/wake detection: track SDL_GetTicks gap between frames.
        A gap > 2s while playing means the device woke from sleep. */
@@ -631,15 +634,44 @@ int main(int argc, char *argv[]) {
                 }
 
             } else { /* MODE_PLAYBACK */
+                if (ev.type == SDL_KEYUP) {
+                    if (ev.key.keysym.sym == SDLK_RETURN) {
+                        /* START released: fire toggle only if not used as modifier */
+                        if (!start_used_as_modifier)
+                            player_toggle_subs(&player);
+                        start_held = 0;
+                        start_used_as_modifier = 0;
+                    }
+                }
                 if (ev.type == SDL_KEYDOWN) {
+                    if (ev.key.keysym.sym == SDLK_RETURN) {
+                        /* START pressed: arm modifier, defer toggle to keyup */
+                        start_held = 1;
+                        start_used_as_modifier = 0;
+                        break; /* don't fall into the switch below */
+                    }
+
+                    /* D-pad while START is held → subtitle sync adjustment */
+                    if (start_held) {
+                        int consumed = 1;
+                        switch (ev.key.keysym.sym) {
+                            case SDLK_LEFT:  player_sub_adjust(&player, -0.5); break;
+                            case SDLK_RIGHT: player_sub_adjust(&player, +0.5); break;
+                            case SDLK_UP:    player_sub_adjust(&player, +5.0); break;
+                            case SDLK_DOWN:  player_sub_adjust(&player, -5.0); break;
+                            default: consumed = 0; break;
+                        }
+                        if (consumed) {
+                            start_used_as_modifier = 1;
+                            break;
+                        }
+                    }
+
                     player_show_osd(&player);
                     switch (ev.key.keysym.sym) {
                         case SDLK_SPACE:
                             if (player.state == PLAYER_PLAYING) player_pause(&player);
                             else if (player.state == PLAYER_PAUSED) player_resume(&player);
-                            break;
-                        case SDLK_RETURN: /* START — toggle subtitles */
-                            player_toggle_subs(&player);
                             break;
                         case SDLK_LEFT:  player_seek(&player, -10.0); break;
                         case SDLK_RIGHT: player_seek(&player, +10.0); break;
@@ -754,6 +786,7 @@ int main(int argc, char *argv[]) {
                             player_close(&player);
                             state.prog_folder_idx = -1;
                             state.prog_season_idx = -1;
+                            start_held = 0; start_used_as_modifier = 0;
                             mode = MODE_BROWSER;
                             break;
                         default: break;
