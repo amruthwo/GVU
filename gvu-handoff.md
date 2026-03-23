@@ -1,12 +1,14 @@
 # GVU — Video Player for SpruceOS Devices: Handoff Document
 
-> **Status as of 2026-03-21:** A30 build working on-device. Video playback, file browser, OSD,
-> seek, A/V sync, audio, theme cycling, history, resume, help overlay, volume keys, screen
-> tearing, dynamic UI scaling, themed launcher icon, B-to-exit, D-pad hold-to-scroll,
+> **Status as of 2026-03-22 (post-v0.1.1):** A30 build working on-device. Video playback, file
+> browser, OSD, seek, A/V sync, audio, theme cycling, history, resume, help overlay, volume keys,
+> screen tearing, dynamic UI scaling, themed launcher icon, B-to-exit, D-pad hold-to-scroll,
 > Plex-style 3-level media browser (shows → seasons → files), cover art scraping with live
 > season art refresh (Y button, TMDB primary / TVMaze fallback), independent per-view layout
-> preferences (persisted to `gvu.conf`), Clear History (SELECT), and status bar (clock /
-> title / WiFi + battery — shown in browser and during OSD) all confirmed working.
+> preferences (persisted to `gvu.conf`), Clear History (SELECT), status bar (clock / title /
+> WiFi + battery — per-theme colors, WiFi hidden when off), rounded-corner UI throughout,
+> hardware volume sync at startup, and .srt subtitle support (toggle + sync adjustment) all
+> confirmed working.
 > **Sleep/wake audio recovery is partially working but not yet solved** — see the sleep/wake
 > section below for full analysis.
 
@@ -219,7 +221,11 @@ then one synthetic SDL_KEYDOWN (repeat=1) every 80ms while held. Only navigation
 | Button | SDL keysym | Action |
 |--------|-----------|--------|
 | A | SDLK_SPACE | Pause / Resume |
-| START | SDLK_RETURN | Pause / Resume |
+| START (tap) | SDLK_RETURN | Toggle subtitles ON / OFF (or "No subtitles" toast) |
+| START + D-pad LEFT | — | Subtitle sync −0.5 s (subtitles appear earlier) |
+| START + D-pad RIGHT | — | Subtitle sync +0.5 s (subtitles appear later) |
+| START + D-pad UP | — | Subtitle sync +5.0 s |
+| START + D-pad DOWN | — | Subtitle sync −5.0 s |
 | B | SDLK_LCTRL | Stop, save position, return to browser |
 | D-pad LEFT | SDLK_LEFT | Seek −10 s |
 | D-pad RIGHT | SDLK_RIGHT | Seek +10 s |
@@ -234,6 +240,10 @@ then one synthetic SDL_KEYDOWN (repeat=1) every 80ms while held. Only navigation
 | D-pad DOWN | SDLK_DOWN | Brightness down |
 | MENU (tap) | SDLK_ESCAPE | Stop, return to browser |
 | MENU (hold 1s) | SDLK_ESCAPE | Open controls reference overlay |
+
+**START modifier implementation:** START keydown arms a hold-modifier flag; the toggle fires
+on START *keyup* only if no D-pad key was pressed while it was held. D-pad events consumed
+by the modifier path are not passed to seek or brightness handlers.
 
 Volume UP/DOWN keys (KEY_VOLUMEUP=115, KEY_VOLUMEDOWN=114) come through `/dev/input/event3` and
 are mapped to SDLK_EQUALS / SDLK_MINUS → ±10% software volume. SpruceOS may also adjust ALSA
@@ -484,9 +494,26 @@ fi
 ## Color Themes (implemented)
 
 GVU uses the same 10 themes as PixelReader for SpruceOS visual consistency.
-Each theme defines 5 UI colors (`background`, `text`, `secondary`, `highlight_bg`,
-`highlight_text`) plus 5 dedicated cover icon colors (`cover_body`, `cover_tab`,
+Each theme defines 6 UI colors (`background`, `text`, `secondary`, `highlight_bg`,
+`highlight_text`, `statusbar_fg`) plus 5 dedicated cover icon colors (`cover_body`, `cover_tab`,
 `cover_shadow`, `cover_screen`, `cover_play`).
+
+`statusbar_fg` is an independent RGB value used exclusively by the status bar for all text and
+icons (clock, "GVU" title, WiFi bars, battery %). It is decoupled from `text` so each theme can
+choose a status-bar accent color without affecting browser/player text. Values per theme:
+
+| Theme | `statusbar_fg` |
+|-------|---------------|
+| SPRUCE | `{0xd2,0xe1,0xd2}` — light sage |
+| night_contrast | `{0xe0,0x50,0x00}` — dark orange |
+| light_contrast | `{0xa3,0x51,0xc8}` — violet |
+| light_sepia | `{0x78,0x9c,0x70}` — sage |
+| vampire | `{0xc0,0x00,0x00}` — red |
+| coffee_dark | `{0xd2,0xb4,0x8c}` — tan |
+| cream_latte | `{0x6f,0x4e,0x37}` — dark medium brown |
+| nautical | `{0xd4,0xaf,0x37}` — gold |
+| nordic_frost | `{0x88,0xc0,0xd0}` — teal |
+| night | `{0x7a,0xb2,0xde}` — blue |
 
 The cover fields are separate from the UI fields so each theme can style the default cover
 art independently without affecting browser text colors. All cover colors are drawn from the
@@ -596,6 +623,14 @@ All reads are cached; the files are only opened at the interval above to avoid h
 the kernel on every frame. Missing files (desktop build) leave the indicators blank without
 error.
 
+**WiFi visibility:** `s_wifi_link` is reset to `-1.f` at the start of each 5s poll cycle.
+If `/proc/net/wireless` is absent or empty (interface down / WiFi off), `s_wifi_link` stays
+`-1.f` and the entire WiFi bars section is hidden. When WiFi is on, the section reappears
+within 5 seconds.
+
+**Status bar colors:** All text and icons use `theme->statusbar_fg` (not `theme->text`).
+Each theme has its own `statusbar_fg` value — see the Color Themes section for the full table.
+
 **Browser layout:**
 `main.c` uses `SDL_RenderSetViewport` to constrain browser content to `y = sbar_h` and
 below, so browser tiles never overlap the bar. `win_h - sbar_h` is passed to `browser_draw`
@@ -613,6 +648,71 @@ int  statusbar_height(int win_w);   /* bar height in px at this window width */
 void statusbar_draw(SDL_Renderer *renderer, TTF_Font *font,
                     const Theme *theme, int win_w, int win_h);
 ```
+
+---
+
+## Rounded Corner UI
+
+All interactive UI surfaces use rounded rectangles and pills. No external library is used —
+everything is drawn with raw SDL2 primitives.
+
+### `fill_rounded_rect(r, x, y, w, h, rad, R, G, B, A)`
+
+Implemented in `browser.c`, `player.c`, and `overlay.c` (each file has a static copy).
+Draws using three `SDL_RenderFillRect` calls (center strip + left + right strips) plus
+row-by-row `SDL_RenderDrawLine` for the corner arcs. Sets `SDL_BLENDMODE_BLEND` before
+drawing so alpha is respected.
+
+Corner arc formula: for row `dy` from 0 to `rad-1`, `span = (int)sqrtf(rad*rad - dist*dist)`
+where `dist = rad - dy`. The top-left and top-right arcs are drawn by offset from the
+top-left and top-right corners; bottom arcs mirror from the bottom.
+
+`fill_pill_bg(r, x, y, w, h, R, G, B, A)` is a wrapper that calls `fill_rounded_rect` with
+`rad = h / 2`.
+
+### `draw_rounded_outline(r, x, y, w, h, rad, R, G, B)`
+
+Implemented in `statusbar.c` and `overlay.c`. Uses Bresenham midpoint circle algorithm to
+draw the four corner arcs, plus `SDL_RenderDrawLine` for the straight edges.
+
+### Where rounded corners are used
+
+| Element | Radius |
+|---------|--------|
+| Browser folder grid — selection highlight | `sc(10, win_w)` |
+| Browser folder grid — selection glow | `rad + 2` |
+| Browser folder grid — name strip (rounds tile bottom) | `sc(10, win_w)` |
+| Browser folder grid — placeholder cover (no image) | `sc(10, win_w)` |
+| Browser file list — row highlight | `sc(10, win_w)` |
+| Browser folder / show header pill | `h / 2` (full pill) |
+| Browser exit-confirm toast | `sc(12, win_w)` |
+| Player volume / brightness indicator box | `sc(8, win_w)` |
+| Player zoom / audio track OSD toast | `sc(12, win_w)` |
+| Overlay panels (resume, up-next, error, help, tutorial, scrape) | `sc(12, w)` |
+| Battery outline (status bar) | 2px |
+
+### Corner artifacts (fixed)
+
+Previously, cover art tile corners were overwritten with `theme->background` to create the
+illusion of rounded corners. This caused visible colored squares when the selection highlight
+(a different color) was behind a tile. Fix: removed the corner masking entirely. Cover art has
+square corners; the name strip below uses a rounded-bottom rect instead.
+
+---
+
+## Hardware Volume Sync at Startup
+
+The A30 DAC resets `digital volume` to 0 on every hardware wake. GVU maps its software
+0–100% scale to ALSA's 0–63 range (63 = max). Without syncing at startup, GVU starts
+showing "50%" (or wherever the config says) while the actual DAC is at max (63), causing the
+displayed percentage and audible level to diverge until the user presses volume keys.
+
+**Fix:** At startup (after `a30_screen_init()`), GVU runs `amixer sset 'digital volume' 63`
+via `posix_spawn` — the same call used in `audio_wake()`. This sets the DAC to its max value
+so GVU's 0–100% software scale maps cleanly to the full hardware range from the first frame.
+
+This is in `main.c` inside `#ifdef GVU_A30`, using the same `child_argv` / `child_env`
+pattern as `audio_wake()` to avoid the `LD_LIBRARY_PATH` clash with `system()`.
 
 ---
 
@@ -1233,9 +1333,32 @@ so action buttons (A, B, R1, etc.) cannot accidentally fire while scrolling.
 
 Tuning constants: `KEY_REPEAT_DELAY_MS 300`, `KEY_REPEAT_PERIOD_MS 80` in `src/a30_screen.c`.
 
-### Subtitles
-Not yet implemented. `.srt` files alongside videos are ignored. START button is currently
-unbound during playback (no subtitle toggle). Post-MVP.
+### Subtitles — IMPLEMENTED ✓
+
+SRT subtitle sidecar files are supported. Place `show.srt` alongside `show.mkv` (same
+base name, `.srt` extension) and subtitles load automatically when the file is opened.
+
+**Implementation:** `src/subtitle.c` / `src/subtitle.h`
+
+- `sub_load()`: replaces video extension with `.srt`, opens and parses the file. HTML-style
+  tags (`<i>`, `<b>`, `<font>`) and SSA/ASS override blocks (`{\an8}`) are stripped.
+  Multi-line entries stored with `\n` separator.
+- `sub_get()`: linear scan for the active entry at `pos_sec - delay_sec`. Negligible cost
+  on ARMv7 for typical SRT files (< 1000 entries).
+- `SubCtx` fields: `entries`, `count`, `enabled`, `delay_sec` (sync offset in seconds).
+- Subtitle text is rendered centred near the bottom of the frame, in a semi-transparent
+  dark rounded-rect box. Lifted above the OSD strip (`sc(80, win_w)`) when OSD is visible.
+  Multi-line entries draw each line separately, centred within the box.
+
+**Controls:**
+- START tap → toggle ON/OFF (toast: "Subtitles ON" / "Subtitles OFF" / "No subtitles")
+- START + D-pad LEFT/RIGHT → sync ±0.5 s
+- START + D-pad UP/DOWN → sync ±5.0 s
+- Sync toast: "Sub delay: +1.5s"
+
+**Pending:** On-device subtitle download (search + language select + rename to match video
+filename). Planned to use START in the browser when no sidecar exists, with a combo
+(e.g. START+X) to force re-download or delete existing sidecar.
 
 ### Cover art / icon — FIXED ✓
 `icon.png` is generated at startup from `resources/default_cover.svg` recolored in the active
@@ -1245,6 +1368,31 @@ beside the binary), which is where `config.json` points PyUI to look for it.
 
 This is A30-only (`#ifdef GVU_A30` guard in `main.c`). On the desktop test build the call is
 skipped since there is no SpruceOS launcher to update.
+
+A pre-built `icon.png` (SPRUCE theme) is also committed to `cross-compile/miyoo-a30/gvu_base/`
+so PyUI shows the tile icon immediately on fresh install, before the user has ever launched GVU.
+(`icon.png` is in `.gitignore` due to an older PixelReader rule; it was force-added with
+`git add -f`.)
+
+### EOS autoplay — FIXED ✓
+When a file ends, `player_update()` used to check `audio.eos` only, without waiting for the
+audio ring to drain. On short files or fast seeks near the end, the ring could still hold
+several seconds of buffered audio while `audio.eos` was already set — causing the autoplay
+countdown to start (and sometimes fire) while audio was still playing.
+
+Fix: EOS is considered reached only when **both** `audio.eos == true` AND `ring.filled == 0`.
+For video-only or audio-stream-absent files, the old simple check is used unchanged.
+
+```c
+int audio_done = 0;
+if (p->demux.audio_stream_idx >= 0) {
+    SDL_LockMutex(p->audio.ring.mutex);
+    audio_done = p->audio.eos && (p->audio.ring.filled == 0);
+    SDL_UnlockMutex(p->audio.ring.mutex);
+}
+// A/V sync loop:
+if (diff > AV_SYNC_THRESHOLD_SEC && !audio_done) { break; }
+```
 
 ### History / resume state path
 Currently stored as flat files in the app directory. Planned location:
