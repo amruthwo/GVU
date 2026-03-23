@@ -91,12 +91,13 @@ static void make_srt_dest(const char *video_path, char *buf, int buf_sz) {
 static const char *S_PYTHON     = "/mnt/SDCARD/spruce/bin/python/bin/python3.10";
 static const char *S_PYENV      = "PYTHONHOME=/mnt/SDCARD/spruce/bin/python";
 static const char *S_PATH_ENV   = "PATH=/usr/local/bin:/usr/bin:/bin:/mnt/SDCARD/spruce/bin";
+static const char *S_SSL_ENV    = "SSL_CERT_FILE=/mnt/SDCARD/spruce/etc/ca-certificates.crt";
 static const char *S_SCRIPT     = "resources/fetch_subtitles.py";
 
 static void sub_spawn(SubWorkflow *wf, char **argv_buf) {
     unlink(SUB_DONE_FILE);
     unlink(SUB_RESULTS_FILE);
-    char *env_buf[] = { (char *)S_PYENV, (char *)S_PATH_ENV, NULL };
+    char *env_buf[] = { (char *)S_PYENV, (char *)S_PATH_ENV, (char *)S_SSL_ENV, NULL };
     int logfd = open(SUB_LOG_FILE, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     posix_spawn_file_actions_t fa;
     posix_spawn_file_actions_init(&fa);
@@ -1473,12 +1474,12 @@ int main(int argc, char *argv[]) {
                 mode != MODE_PLAYBACK) {
             const Theme *t = theme_get();
             int tw = 0, th = 0;
-            TTF_SizeUTF8(font_small, sub_toast_msg, &tw, &th);
-            int tpw = tw + 24, tph = th + 12;
+            TTF_SizeUTF8(font, sub_toast_msg, &tw, &th);
+            int tpw = tw + 48, tph = th + 28;
             int tpx = (win_w - tpw) / 2, tpy = win_h / 2 - tph / 2;
             overlay_panel(renderer, tpx, tpy, tpw, tph, t);
             SDL_Color tc = { t->text.r, t->text.g, t->text.b, 255 };
-            SDL_Surface *ts = TTF_RenderUTF8_Blended(font_small, sub_toast_msg, tc);
+            SDL_Surface *ts = TTF_RenderUTF8_Blended(font, sub_toast_msg, tc);
             if (ts) {
                 SDL_Texture *tt = SDL_CreateTextureFromSurface(renderer, ts);
                 if (tt) {

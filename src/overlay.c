@@ -85,6 +85,7 @@ static void draw_rounded_outline(SDL_Renderer *r, int x, int y, int w, int h,
 static void panel_bg(SDL_Renderer *r, int x, int y, int w, int h,
                      const Theme *theme) {
     int rad = sc(12, w);
+    if (rad < 12) rad = 12;
     fill_rounded_rect(r, x, y, w, h, rad,
                       theme->background.r, theme->background.g,
                       theme->background.b, 0xff);

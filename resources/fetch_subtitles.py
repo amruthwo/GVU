@@ -57,7 +57,7 @@ def url_encode(s):
 def curl_get(url, extra_args=None):
     """Run curl GET. Returns (http_status_int, body_str)."""
     cmd = [CURL, "-s", "-w", "\n%{http_code}", "-L",
-           "--max-time", "20", "--compressed"]
+           "--max-time", "20"]
     if extra_args:
         cmd += extra_args
     cmd.append(url)
