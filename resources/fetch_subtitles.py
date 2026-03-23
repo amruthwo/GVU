@@ -258,8 +258,18 @@ def extract_best_srt(zip_path, dest_path):
                     best = candidates[0][0]
 
             if best is None:
-                # No episode match — fall back to largest file in the archive
                 srts.sort(key=lambda x: x[1], reverse=True)
+                if ep_s is not None:
+                    # No episode-matched file found. Refuse if:
+                    # - multiple files (season pack, right episode simply absent), or
+                    # - single file but it carries an explicit different episode tag
+                    fallback = os.path.basename(srts[0][0])
+                    fm = _SXXEXX.search(re.sub(r"[\._]", " ", fallback))
+                    wrong_ep = fm and (int(fm.group(1)) != ep_s or int(fm.group(2)) != ep_e)
+                    if len(srts) > 1 or wrong_ep:
+                        print("zip: no S{:02d}E{:02d} match ({} files)".format(
+                            ep_s, ep_e, len(srts)), file=sys.stderr)
+                        return False
                 best = srts[0][0]
 
             print("zip: extracting '{}'".format(best), file=sys.stderr)
@@ -360,7 +370,7 @@ def do_download(provider, download_key, srt_dest):
 
         tmp_srt = os.path.join(tmpdir, "chosen.srt")
         if not extract_best_srt(zip_path, tmp_srt):
-            write_done("error: could not extract .srt from archive")
+            write_done("error: wrong episode in archive (try another result)")
             return
 
         shutil.move(tmp_srt, srt_dest)

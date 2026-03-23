@@ -403,7 +403,7 @@ int main(int argc, char *argv[]) {
     SubWorkflow sub_wf;
     memset(&sub_wf, 0, sizeof(sub_wf));
     /* Download result toast */
-    char     sub_toast_msg[64]  = {0};
+    char     sub_toast_msg[128] = {0};
     Uint32   sub_toast_hide_at  = 0;
 #endif
 #ifdef GVU_A30
@@ -1271,8 +1271,9 @@ int main(int argc, char *argv[]) {
                              "Subtitle downloaded");
                 } else {
                     fprintf(stderr, "subtitle download: %s\n", done_msg);
-                    snprintf(sub_toast_msg, sizeof(sub_toast_msg),
-                             "Download failed");
+                    const char *errtxt = done_msg;
+                    if (strncmp(errtxt, "error: ", 7) == 0) errtxt += 7;
+                    snprintf(sub_toast_msg, sizeof(sub_toast_msg), "%s", errtxt);
                 }
                 sub_toast_hide_at = SDL_GetTicks() + 2500;
                 if (sub_wf.from_playback && mode == MODE_PLAYBACK) {
