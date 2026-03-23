@@ -226,21 +226,42 @@ def podnapisi_search(title, season, episode, lang):
 
 def extract_best_srt(zip_path, dest_path):
     """
-    Extract the largest .srt from zip_path to dest_path.
+    Extract the best-matching .srt from zip_path to dest_path.
+    Prefers files whose name contains the same S##E## as dest_path.
+    Falls back to the largest .srt if no episode match is found.
     Returns True on success, False on failure.
     """
+    dest_stem = os.path.splitext(os.path.basename(dest_path))[0]
+    ep_m = _SXXEXX.search(re.sub(r"[\._]", " ", dest_stem))
+    ep_s = int(ep_m.group(1)) if ep_m else None
+    ep_e = int(ep_m.group(2)) if ep_m else None
+
     try:
         with zipfile.ZipFile(zip_path, "r") as z:
-            srts = [
-                (name, z.getinfo(name).file_size)
-                for name in z.namelist()
-                if name.lower().endswith(".srt")
-            ]
+            srts = [(name, z.getinfo(name).file_size)
+                    for name in z.namelist()
+                    if name.lower().endswith(".srt")]
             if not srts:
                 print("zip: no .srt files found", file=sys.stderr)
                 return False
-            srts.sort(key=lambda x: x[1], reverse=True)
-            best = srts[0][0]
+
+            best = None
+            if ep_s is not None:
+                # Prefer a file whose name encodes the same episode number
+                candidates = []
+                for name, size in srts:
+                    m = _SXXEXX.search(re.sub(r"[\._]", " ", os.path.basename(name)))
+                    if m and int(m.group(1)) == ep_s and int(m.group(2)) == ep_e:
+                        candidates.append((name, size))
+                if candidates:
+                    candidates.sort(key=lambda x: x[1], reverse=True)
+                    best = candidates[0][0]
+
+            if best is None:
+                # No episode match — fall back to largest file in the archive
+                srts.sort(key=lambda x: x[1], reverse=True)
+                best = srts[0][0]
+
             print("zip: extracting '{}'".format(best), file=sys.stderr)
             with z.open(best) as src, open(dest_path, "wb") as dst:
                 shutil.copyfileobj(src, dst)

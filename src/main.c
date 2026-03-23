@@ -562,6 +562,12 @@ int main(int argc, char *argv[]) {
 #ifdef GVU_A30
             /* Subtitle workflow intercepts all input when active */
             if (sub_wf.state != SUB_NONE) {
+                /* START released while workflow is active — clear modifier state
+                   so D-pad works normally once the workflow finishes */
+                if (ev.type == SDL_KEYUP && ev.key.keysym.sym == SDLK_RETURN) {
+                    start_held = 0;
+                    start_used_as_modifier = 0;
+                }
                 if (ev.type == SDL_KEYDOWN) {
                     SDL_Keycode sk = ev.key.keysym.sym;
                     if (sub_wf.state == SUB_LANG_PICK) {
