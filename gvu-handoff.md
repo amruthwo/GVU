@@ -7,10 +7,10 @@
 > season art refresh (Y button, TMDB primary / TVMaze fallback), independent per-view layout
 > preferences (persisted to `gvu.conf`), Clear History (SELECT), status bar (clock / title /
 > WiFi + battery — per-theme colors, WiFi hidden when off), rounded-corner UI throughout,
-> hardware volume sync at startup, and .srt subtitle support (toggle + sync adjustment) all
-> confirmed working.
-> **Sleep/wake audio recovery is partially working but not yet solved** — see the sleep/wake
-> section below for full analysis.
+> hardware volume sync at startup, .srt subtitle support (toggle + sync adjustment), and subtitle
+> download workflow (SubDL + Podnapisi, language picker, results list, ZIP extraction) all
+> implemented. **Sleep/wake audio recovery is partially working but not yet solved** — see the
+> sleep/wake section below for full analysis.
 
 ---
 
@@ -280,7 +280,9 @@ system volume on these presses — that's fine, both layers work independently.
 
 | Button | Action |
 |--------|--------|
-| A / START | Play selected file (shows resume prompt if applicable) |
+| A | Play selected file (shows resume prompt if applicable) |
+| START (tap) | Search subtitles for selected file (A30 only) |
+| START + X | Force re-download subtitles (A30 only) |
 | B | Back to Season List (if show); back to Folder Grid (if flat folder) |
 | D-pad UP/DOWN | Navigate |
 | L2 / R2 | Jump to previous / next season (if show); previous / next folder (if flat) |
@@ -1333,7 +1335,7 @@ so action buttons (A, B, R1, etc.) cannot accidentally fire while scrolling.
 
 Tuning constants: `KEY_REPEAT_DELAY_MS 300`, `KEY_REPEAT_PERIOD_MS 80` in `src/a30_screen.c`.
 
-### Subtitles — IMPLEMENTED ✓
+### Subtitles — IMPLEMENTED ✓ (sidecar + download)
 
 SRT subtitle sidecar files are supported. Place `show.srt` alongside `show.mkv` (same
 base name, `.srt` extension) and subtitles load automatically when the file is opened.
@@ -1350,15 +1352,66 @@ base name, `.srt` extension) and subtitles load automatically when the file is o
   dark rounded-rect box. Lifted above the OSD strip (`sc(80, win_w)`) when OSD is visible.
   Multi-line entries draw each line separately, centred within the box.
 
-**Controls:**
+**Playback controls:**
 - START tap → toggle ON/OFF (toast: "Subtitles ON" / "Subtitles OFF" / "No subtitles")
 - START + D-pad LEFT/RIGHT → sync ±0.5 s
 - START + D-pad UP/DOWN → sync ±5.0 s
-- Sync toast: "Sub delay: +1.5s"
+- START + X → force re-download subtitle (deletes existing sidecar, launches search)
 
-**Pending:** On-device subtitle download (search + language select + rename to match video
-filename). Planned to use START in the browser when no sidecar exists, with a combo
-(e.g. START+X) to force re-download or delete existing sidecar.
+**Browser controls (VIEW_FILES only):**
+- START tap → search for subtitles for the selected file (if sidecar absent)
+- START + X → force re-download (delete existing sidecar, then search)
+
+**START modifier implementation:** Same deferred pattern as sync adjustment. START keydown
+arms `start_held=1`; action fires on keyup only if no other key was pressed while held.
+`start_used_as_modifier=1` suppresses both the toggle and X's normal action (audio cycle
+in playback / History in browser).
+
+#### Subtitle Download Workflow (A30 only)
+
+Uses a Python script (`resources/fetch_subtitles.py`) spawned with `posix_spawn`.
+All HTTPS calls delegate to `/mnt/SDCARD/spruce/bin/curl` (avoids Python SSL cert issues).
+Script requires `PYTHONHOME=/mnt/SDCARD/spruce/bin/python` in child environment.
+
+**Workflow state machine** (`SubState` enum in `main.c`):
+1. `SUB_LANG_PICK` — shown on first subtitle search; saves ISO code to `gvu.conf:sub_lang`
+2. `SUB_SEARCHING` — Python script running; polls `/tmp/gvu_sub_done`
+3. `SUB_RESULTS` — results list overlay; D-pad to select, A to download, B to cancel
+4. `SUB_DOWNLOADING` — download + ZIP extract running; polls `/tmp/gvu_sub_done`
+5. `SUB_NONE` — inactive
+
+**Sentinel files:**
+- `/tmp/gvu_sub_done` — "ok" or "error: <message>", written by the Python script
+- `/tmp/gvu_sub_results.txt` — pipe-delimited: `provider|download_key|display_name|lang|downloads|hi`
+- `/tmp/gvu_sub.log` — stdout/stderr from the Python script (debug)
+
+**Search providers:**
+- **SubDL** (primary) — free API, 2000 req/day. Requires API key in `gvu.conf:subdl_key`.
+  Users who omit the key fall back to Podnapisi-only.
+- **Podnapisi** (fallback) — no key required.
+
+Search parses the video filename (and parent directory for TV shows) to extract clean title,
+season number, and episode number. Release tags (BluRay, WEBRip, x264, etc.) are stripped.
+
+API key injection at package time: `package_gvu_a30.sh` reads `.subdl_key` from the repo root
+(gitignored) and appends `subdl_key = <key>` to `gvu.conf`. Same pattern as TMDB key.
+
+**Language preference:** Saved to `gvu.conf:sub_lang` (ISO 639-1, e.g. "en"). Language picker
+is shown on first subtitle search. Reset with `resources/clear_subtitle_pref.sh` (run from
+DinguxCommander).
+
+**ZIP handling:** SubDL and Podnapisi both return ZIP archives. Python `zipfile` module
+extracts the largest `.srt` file from the archive and places it beside the video file.
+
+**New/changed files:**
+- `resources/fetch_subtitles.py` — Python search + download script
+- `resources/clear_subtitle_pref.sh` — removes `sub_lang` from `gvu.conf`
+- `src/theme.c` / `src/theme.h` — `config_sub_lang()`, `config_set_sub_lang()`, `config_subdl_key()`
+- `src/overlay.c` / `src/overlay.h` — `lang_pick_draw()`, `sub_searching_draw()`,
+  `sub_downloading_draw()`, `sub_results_draw()`, `SubResult` struct, `LANG_CODES[]`, `LANG_LABELS[]`
+- `src/main.c` — `SubWorkflow` struct + state machine, `sub_workflow_trigger()`, browser START
+  intercept, playback START+X, polling, overlay rendering
+- `cross-compile/miyoo-a30/package_gvu_a30.sh` — SubDL key injection + new resource files
 
 ### Cover art / icon — FIXED ✓
 `icon.png` is generated at startup from `resources/default_cover.svg` recolored in the active
