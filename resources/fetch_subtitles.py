@@ -368,12 +368,9 @@ def do_download(provider, download_key, srt_dest):
             write_done("error: download failed")
             return
 
-        tmp_srt = os.path.join(tmpdir, "chosen.srt")
-        if not extract_best_srt(zip_path, tmp_srt):
+        if not extract_best_srt(zip_path, srt_dest):
             write_done("error: wrong episode in archive (try another result)")
             return
-
-        shutil.move(tmp_srt, srt_dest)
         print("saved to {}".format(srt_dest), file=sys.stderr)
         write_done("ok")
 

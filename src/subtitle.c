@@ -120,8 +120,10 @@ int sub_load(SubCtx *ctx, const char *video_path) {
             } else if (cur) {
                 /* Append (with newline separator for multi-line entries) */
                 int tlen = (int)strlen(cur->text);
-                if (tlen > 0 && tlen < SUB_TEXT_MAX - 1)
+                if (tlen > 0 && tlen < SUB_TEXT_MAX - 1) {
                     cur->text[tlen++] = '\n';
+                    cur->text[tlen]   = '\0'; /* keep string terminated before strncat */
+                }
                 char clean[SUB_TEXT_MAX];
                 strip_markup(line, clean, sizeof(clean));
                 int avail = SUB_TEXT_MAX - tlen - 1;
