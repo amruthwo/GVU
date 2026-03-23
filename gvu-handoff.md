@@ -1,6 +1,6 @@
 # GVU — Video Player for SpruceOS Devices: Handoff Document
 
-> **Status as of 2026-03-22 (post-v0.1.1):** A30 build working on-device. Video playback, file
+> **Status as of 2026-03-23 (post-v0.1.1, subtitle workflow in active testing):** A30 build working on-device. Video playback, file
 > browser, OSD, seek, A/V sync, audio, theme cycling, history, resume, help overlay, volume keys,
 > screen tearing, dynamic UI scaling, themed launcher icon, B-to-exit, D-pad hold-to-scroll,
 > Plex-style 3-level media browser (shows → seasons → files), cover art scraping with live
@@ -1425,6 +1425,12 @@ arms `start_held=1`; action fires on keyup only if no other key was pressed whil
 `start_used_as_modifier=1` suppresses both the toggle and X's normal action (audio cycle
 in playback / History in browser).
 
+**Important:** The sub_wf handler's `continue` at line ~606 consumes ALL events while
+`sub_wf.state != SUB_NONE`, including SDLK_RETURN KEYUP. If the workflow is triggered from
+playback via START+X, the START release is eaten and `start_held` stays 1 after the workflow
+completes — every D-pad press then triggers subtitle sync instead of seeking. Fix: the sub_wf
+handler explicitly clears `start_held`/`start_used_as_modifier` on SDLK_RETURN KEYUP.
+
 #### Subtitle Download Workflow (A30 only)
 
 Uses a Python script (`resources/fetch_subtitles.py`) spawned with `posix_spawn`.
@@ -1458,8 +1464,22 @@ API key injection at package time: `package_gvu_a30.sh` reads `.subdl_key` from 
 is shown on first subtitle search. Reset with `resources/clear_subtitle_pref.sh` (run from
 DinguxCommander).
 
-**ZIP handling:** SubDL and Podnapisi both return ZIP archives. Python `zipfile` module
-extracts the largest `.srt` file from the archive and places it beside the video file.
+**ZIP handling:** SubDL and Podnapisi both return ZIP archives. `extract_best_srt()` in
+`fetch_subtitles.py` picks the right file using this priority:
+1. Files whose name contains the same `S##E##` as the destination `.srt` (episode match).
+   If multiple match, largest wins.
+2. If no episode match and the archive is a movie (no `S##E##` in dest name): largest file.
+3. If no episode match AND (multiple files in archive OR the only file has an explicit
+   different episode tag): write `"error: wrong episode in archive (try another result)"`
+   to the sentinel and abort — the wrong file is never saved.
+
+**posix_spawn environment:** The child environment must include:
+- `PYTHONHOME=/mnt/SDCARD/spruce/bin/python`
+- `PATH=/usr/local/bin:/usr/bin:/bin:/mnt/SDCARD/spruce/bin`
+- `SSL_CERT_FILE=/mnt/SDCARD/spruce/etc/ca-certificates.crt`
+
+The last one is critical — without it, curl exits with code 60 (SSL_CACERT) and every
+HTTPS request silently returns HTTP 0. This is set in `S_SSL_ENV` in `main.c`.
 
 **New/changed files:**
 - `resources/fetch_subtitles.py` — Python search + download script
@@ -1470,6 +1490,28 @@ extracts the largest `.srt` file from the archive and places it beside the video
 - `src/main.c` — `SubWorkflow` struct + state machine, `sub_workflow_trigger()`, browser START
   intercept, playback START+X, polling, overlay rendering
 - `cross-compile/miyoo-a30/package_gvu_a30.sh` — SubDL key injection + new resource files
+
+### sub_load heap corruption — FIXED ✓
+
+In `src/subtitle.c`, the multi-line subtitle text append wrote a `\n` separator at
+`cur->text[tlen]` (the old null position) then incremented `tlen`. The subsequent
+`strncat(cur->text + tlen, clean, avail)` received an unterminated string — it scanned
+forward through uninitialized heap memory until it found a null (possibly past the `SubEntry`
+boundary), corrupting the allocator's linked list. The corruption manifested as
+`realloc(): invalid next size` the next time `sub_load` called `realloc`, crashing with
+SIGABRT (exit 134).
+
+**Fix:** Added `cur->text[tlen] = '\0'` immediately after writing the `\n`, before `strncat`.
+
+### build_inside_docker.sh libz collection — FIXED ✓
+
+The Docker cross-compile environment has `libz.so` (dev symlink) but not `libz.so.1`
+(runtime symlink). The collection script did `readlink -f "$ARMHF_LIB/$SONAME"` on
+`libz.so.1`, got an empty result, and silently skipped it. Packages then built only if
+`libz.so.1` was manually extracted from a previous zip.
+
+**Fix:** If the versioned lookup fails, the script strips the `.so.N` suffix and retries
+with the unversioned name. `libz.so.1` (74KB) is now collected on every Docker build.
 
 ### Cover art / icon — FIXED ✓
 `icon.png` is generated at startup from `resources/default_cover.svg` recolored in the active
