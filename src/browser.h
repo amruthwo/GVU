@@ -9,9 +9,10 @@
  * ---------------------------------------------------------------------- */
 
 typedef enum {
-    LAYOUT_LARGE = 0,   /* 2-column grid, big tiles  */
-    LAYOUT_SMALL,       /* 4-column grid, small tiles */
-    LAYOUT_LIST,        /* single-column list         */
+    LAYOUT_LARGE = 0,   /* 2-column grid, big tiles           */
+    LAYOUT_SMALL,       /* 4-column grid, small tiles         */
+    LAYOUT_LIST,        /* single-column list                 */
+    LAYOUT_SHOWCASE,    /* carousel: one large cover, peeks   */
     LAYOUT_COUNT
 } BrowserLayout;
 

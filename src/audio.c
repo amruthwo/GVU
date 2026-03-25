@@ -69,6 +69,19 @@ static int ring_write(AudioRingBuf *r, const uint8_t *src, int len,
    Must never block. Reads up to `len` bytes; pads with silence if underrun. */
 static void audio_callback(void *userdata, Uint8 *stream, int len) {
     AudioCtx    *a = (AudioCtx *)userdata;
+
+    /* After sleep/wake the A30 ALSA driver fires a storm of underruns while
+       it reinitialises.  Each underrun causes the callback to consume ring
+       data that ALSA never actually plays, producing drift and pops.
+       Serve silence (without touching the ring) until the grace window expires
+       so the storm exhausts itself against nothing. */
+    Uint32 silence_until = atomic_load_explicit(&a->wake_silence_until,
+                                                memory_order_relaxed);
+    if (silence_until && SDL_GetTicks() < silence_until) {
+        memset(stream, 0, (size_t)len);
+        return;
+    }
+
     AudioRingBuf *r = &a->ring;
     int read = 0;
 
@@ -385,40 +398,41 @@ int audio_switch_stream(AudioCtx *a, PacketQueue *pkt_queue,
 
 /* -------------------------------------------------------------------------
  * audio_wake — reinit SDL audio device + restore DAC after A30 sleep/wake
- *
- * After A30 wakes from sleep the ALSA PCM device is broken (continuous
- * underrun storm) and the DAC volume is reset to 0.  Both need fixing:
- *   1. Close and reopen the SDL audio device to reset the ALSA driver state.
- *      Clearing the ring first unblocks the decode thread immediately.
- *   2. Restore the DAC volume via amixer.  posix_spawn is used instead of
- *      fork() — it uses vfork internally so it returns in microseconds even
- *      on a 350MB process.  A clean env (no LD_LIBRARY_PATH) prevents our
- *      cross-compiled libs from breaking the shell.
  * ---------------------------------------------------------------------- */
 
 void audio_wake(AudioCtx *a) {
     if (!a->dev) return;
 
-    {
-        SDL_LockMutex(a->ring.mutex);
-        double bps = AUDIO_OUT_RATE * AUDIO_OUT_CHANNELS * 2.0;
-        fprintf(stderr, "audio_wake: (clock=%.3f ring_delay=%.3fs)\n",
-                a->clock, a->ring.filled / bps);
-        SDL_UnlockMutex(a->ring.mutex);
-    }
+    double bps = AUDIO_OUT_RATE * AUDIO_OUT_CHANNELS * 2.0;
 
-    /* Do NOT close/reopen the SDL audio device.
-     *
-     * SDL_CloseAudioDevice() joins SDL's audio thread.  On the A30, that
-     * thread can be stuck in snd_pcm_recover() for 2+ seconds after wake
-     * while the ALSA PCM driver reinitialises.  Blocking the main loop for
-     * 2 seconds makes the NEXT frame's gap detector see another >2000 ms
-     * gap and fire audio_wake again — cascading until the A/V clock has
-     * drifted 40+ seconds and the watchdog kills the process.
-     *
-     * The ALSA PCM underruns self-heal: each underrun calls snd_pcm_recover()
-     * internally and the stream restarts.  We only need to restore the DAC
-     * volume that the hardware resets to 0 on wake. */
+    SDL_LockMutex(a->ring.mutex);
+    fprintf(stderr, "audio_wake: (clock=%.3f ring_delay=%.3fs)\n",
+            a->clock, a->ring.filled / bps);
+    SDL_UnlockMutex(a->ring.mutex);
+
+    SDL_CloseAudioDevice(a->dev);
+    a->dev = 0;
+
+    SDL_LockMutex(a->ring.mutex);
+    a->ring.filled = a->ring.read_pos = a->ring.write_pos = 0;
+    SDL_CondSignal(a->ring.not_full);
+    SDL_UnlockMutex(a->ring.mutex);
+
+    packet_queue_flush(a->pkt_queue);
+    fprintf(stderr, "audio_wake: ring + queue cleared\n");
+
+    SDL_AudioSpec want = {
+        .freq     = AUDIO_OUT_RATE,
+        .format   = AUDIO_SDL_FORMAT,
+        .channels = AUDIO_OUT_CHANNELS,
+        .samples  = AUDIO_SDL_SAMPLES,
+        .callback = audio_callback,
+        .userdata = a,
+    };
+    SDL_AudioSpec got;
+    a->dev = SDL_OpenAudioDevice(NULL, 0, &want, &got, 0);
+    if (!a->dev)
+        fprintf(stderr, "audio_wake: SDL_OpenAudioDevice failed: %s\n", SDL_GetError());
 
 #ifdef GVU_A30
     {
@@ -433,7 +447,6 @@ void audio_wake(AudioCtx *a) {
         };
         pid_t pid;
         posix_spawn(&pid, "/bin/sh", NULL, NULL, child_argv, child_env);
-        /* No waitpid — SIGCHLD=SIG_IGN in main() auto-reaps the child */
     }
 #endif
 }

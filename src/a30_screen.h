@@ -34,9 +34,8 @@ void a30_screen_close(void);
 
 /* Call immediately after sleep/wake is detected.
    Permanently disables FBIOPAN_DISPLAY for the rest of the session —
-   the sunxi driver ignores FB_ACTIVATE_NOW and can block for 100–700+ seconds
-   after wake waiting for vsync.  After this call a30_flip() uses a fast
-   back→front memcpy instead. */
+   the sunxi driver can block for 100+ seconds after wake waiting for vsync.
+   After this call a30_flip() writes directly to the displayed page. */
 void a30_screen_wake(void);
 
 #endif /* GVU_A30 */

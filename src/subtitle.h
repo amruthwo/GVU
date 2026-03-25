@@ -15,6 +15,10 @@ typedef struct {
     int       count;
     int       enabled;      /* 1 = subtitles on, 0 = off */
     double    delay_sec;    /* offset added to pos_sec before lookup; + = later, - = earlier */
+    float     speed;        /* multiplier applied to pos_sec before lookup (default 1.0).
+                               Use to correct PAL/NTSC frame-rate drift:
+                               1.043 (=25/23.976) when sub made for 23.976 fps, video is 25 fps;
+                               0.959 (=23.976/25) for the reverse. */
 } SubCtx;
 
 /* Load .srt file corresponding to video_path (replaces extension with .srt).

@@ -65,6 +65,10 @@ typedef struct {
     int          sub_osd_visible;
     Uint32       sub_osd_hide_at;
     char         sub_osd_label[32];   /* "Subtitles ON" / "OFF" / "No subtitles" */
+
+    /* Sleep/wake resume toast */
+    int          wake_osd_visible;
+    Uint32       wake_osd_hide_at;
 } Player;
 
 /* Open file, initialise demux + audio + video. Does not start playback. */
@@ -107,11 +111,16 @@ void player_zoom_cycle(Player *p);
 /* Cycle to the next audio track (no-op if only one track). */
 void player_cycle_audio(Player *p);
 
+/* Show "Resuming…" toast for 2s — call on sleep/wake recovery. */
+void player_show_wake_toast(Player *p);
+
 /* Toggle subtitle display on/off. Shows a toast with the new state. */
 void player_toggle_subs(Player *p);
 
 /* Shift subtitle timing by delta_sec (+ = subtitles appear later). Shows toast. */
 void player_sub_adjust(Player *p, double delta_sec);
+/* Cycle subtitle speed preset (1.000 → 1.043 → 0.959 → 1.000). Shows toast. */
+void player_sub_cycle_speed(Player *p);
 
 void player_close (Player *p);
 

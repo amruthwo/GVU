@@ -53,7 +53,7 @@ void config_set_firstrun_done(void);
 const char *config_tmdb_key(void);
 void        config_set_tmdb_key(const char *key);
 
-/* Browser layout preferences (0=LARGE, 1=SMALL, 2=LIST). */
+/* Browser layout preferences (0=LARGE, 1=SMALL, 2=LIST, 3=SHOWCASE). */
 int  config_get_layout(void);
 void config_set_layout(int l);
 int  config_get_season_layout(void);

@@ -41,8 +41,13 @@ fi
 cp -v "$BUILD/gvu32" "$APP/"
 chmod +x "$APP/gvu32"
 
-# Bundled .so files
-cp -v "$BUILD/libs32/"* "$APP/libs32/"
+# Bundled .so files — libz.so.1 is committed in gvu_base/ so packaging works
+# without a fresh Docker build. build/libs32/ is used if present (may have
+# additional libs from a fresh build_inside_docker.sh run).
+cp -v "$BASE_DIR/libz.so.1" "$APP/libs32/"
+if [ -d "$BUILD/libs32" ]; then
+    cp -v "$BUILD/libs32/"* "$APP/libs32/" 2>/dev/null || true
+fi
 
 # Resources
 cp -v "$REPO_ROOT/resources/fonts/DejaVuSans.ttf"  "$APP/resources/fonts/"

@@ -145,38 +145,36 @@ void a30_flip(SDL_Surface *surface) {
 
     const Uint32 *src   = (const Uint32 *)surface->pixels;
     const int     pitch = surface->pitch / 4;   /* pixels per row */
-    Uint32       *dst   = s_fb_mem + (size_t)s_fb_back_yoff * (size_t)s_fb_stride;
 
-    for (int y = 0; y < GVU_H; y++) {
-        const Uint32 *row = src + y * pitch;
-        for (int x = 0; x < GVU_W; x++) {
-            Uint32 px = row[x] | 0xFF000000u;   /* force alpha = 0xFF */
-            dst[(GVU_W - 1 - x) * s_fb_stride + y] = px;
+    /* Post-wake: write directly to the displayed (front) page — no back
+     * buffer, no memcpy, no FBIOPAN_DISPLAY.  Tearing is acceptable.
+     * Normal: write to the hidden back buffer page, then pan. */
+    int dst_yoff = s_fb_pan_disabled ? s_fb_yoffset : s_fb_back_yoff;
+    Uint32 *dst  = s_fb_mem + (size_t)dst_yoff * (size_t)s_fb_stride;
+
+    /* 90° CCW rotation: src GVU_W×GVU_H (landscape) → dst PANEL_W×PANEL_H
+     *
+     * dst pixel (r, c)  =  src pixel (c, GVU_W-1-r)
+     *
+     * Loop order: outer = dst rows (r), inner = dst cols (c).
+     * This writes SEQUENTIALLY to each dst row, which is critical for
+     * non-cached framebuffer memory: sequential writes fill the CPU write
+     * buffer and flush in bursts (~6ms for 1.2 MB) instead of the original
+     * strided pattern which produced a separate bus transaction per pixel
+     * (~30ms).  Reads from the cached SDL surface are strided but can be
+     * prefetched and tolerate latency.  Net saving: ~24ms per frame. */
+    for (int r = 0; r < PANEL_H; r++) {
+        const int src_x = GVU_W - 1 - r;   /* src column for this dst row */
+        Uint32 *out = dst + (size_t)r * (size_t)s_fb_stride;
+        for (int c = 0; c < PANEL_W; c++) {
+            out[c] = src[c * pitch + src_x] | 0xFF000000u;
         }
     }
 
     SDL_UnlockSurface(surface);
 
-    /* Make the back buffer visible.
-     *
-     * Normal path: pan the display controller to the back buffer page
-     * (double-buffering eliminates tearing).
-     *
-     * Post-wake path: on the A30 sunxi driver, FBIOPAN_DISPLAY blocks waiting
-     * for vsync.  After sleep/wake the display controller can take 100–700+
-     * seconds to resume vsync — blocking the main loop the entire time and
-     * making the device appear completely frozen.  FB_ACTIVATE_NOW does not
-     * help; the driver ignores the activate field.
-     *
-     * Once a sleep/wake is detected we permanently disable FBIOPAN_DISPLAY for
-     * the rest of the session.  Instead we copy the back buffer to the
-     * currently-displayed front page (480×640×4 = 1.2 MB memcpy, non-blocking).
-     * Slight tearing is possible but far preferable to an unresponsive device. */
-    if (s_fb_pan_disabled) {
-        Uint32 *front = s_fb_mem + (size_t)s_fb_yoffset   * (size_t)s_fb_stride;
-        Uint32 *back  = s_fb_mem + (size_t)s_fb_back_yoff * (size_t)s_fb_stride;
-        memcpy(front, back, (size_t)(PANEL_W * PANEL_H) * sizeof(Uint32));
-    } else {
+    if (!s_fb_pan_disabled) {
+        /* Normal: pan display controller to the back buffer page. */
         struct fb_var_screeninfo vinfo;
         if (ioctl(s_fb_fd, FBIOGET_VSCREENINFO, &vinfo) == 0) {
             vinfo.yoffset = (uint32_t)s_fb_back_yoff;
@@ -186,6 +184,7 @@ void a30_flip(SDL_Surface *surface) {
             }
         }
     }
+    /* Post-wake: already wrote directly to front page; nothing more to do. */
 }
 
 void a30_screen_wake(void) {

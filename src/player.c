@@ -10,7 +10,7 @@
 #include "subtitle.h"
 
 #define AV_SYNC_THRESHOLD_SEC  0.040   /* 40ms — within one frame at 25fps */
-#define AV_NOSYNC_THRESHOLD_SEC 10.0   /* drop frames further than 10s behind */
+#define AV_NOSYNC_THRESHOLD_SEC 0.15   /* drop frames further than 150ms behind */
 
 /* -------------------------------------------------------------------------
  * Open
@@ -98,6 +98,11 @@ void player_resume(Player *p) {
 void player_show_osd(Player *p) {
     p->osd_visible = 1;
     p->osd_hide_at = SDL_GetTicks() + 3000;
+}
+
+void player_show_wake_toast(Player *p) {
+    p->wake_osd_visible = 1;
+    p->wake_osd_hide_at = SDL_GetTicks() + 2000;
 }
 
 void player_set_volume(Player *p, float vol) {
@@ -200,6 +205,31 @@ void player_toggle_subs(Player *p) {
     p->sub_osd_hide_at = SDL_GetTicks() + 1500;
 }
 
+/* Three common speed presets covering PAL/NTSC conversion in both directions */
+static const float SUB_SPEED_PRESETS[] = { 1.000f, 25.0f/23.976f, 23.976f/25.0f };
+static const int   SUB_SPEED_COUNT     = 3;
+
+void player_sub_cycle_speed(Player *p) {
+    if (p->subtitle.count == 0) return;
+    float cur = p->subtitle.speed;
+    int next = 0;
+    for (int i = 0; i < SUB_SPEED_COUNT; i++) {
+        if (cur < SUB_SPEED_PRESETS[i] + 0.001f &&
+            cur > SUB_SPEED_PRESETS[i] - 0.001f) {
+            next = (i + 1) % SUB_SPEED_COUNT;
+            break;
+        }
+    }
+    p->subtitle.speed = SUB_SPEED_PRESETS[next];
+    if (p->subtitle.speed == 1.0f)
+        snprintf(p->sub_osd_label, sizeof(p->sub_osd_label), "Sub speed: 1.000x");
+    else
+        snprintf(p->sub_osd_label, sizeof(p->sub_osd_label),
+                 "Sub speed: %.3fx", (double)p->subtitle.speed);
+    p->sub_osd_visible = 1;
+    p->sub_osd_hide_at = SDL_GetTicks() + 2000;
+}
+
 void player_sub_adjust(Player *p, double delta_sec) {
     p->subtitle.delay_sec += delta_sec;
     double d = p->subtitle.delay_sec;
@@ -282,6 +312,8 @@ int player_update(Player *p) {
         p->audio_osd_visible = 0;
     if (p->sub_osd_visible   && SDL_GetTicks() >= p->sub_osd_hide_at)
         p->sub_osd_visible   = 0;
+    if (p->wake_osd_visible  && SDL_GetTicks() >= p->wake_osd_hide_at)
+        p->wake_osd_visible  = 0;
 
     /* Audio-only EOS: no video queue, so check audio thread directly */
     if (!p->eos && p->demux.video_stream_idx < 0 && p->audio.eos)
@@ -717,7 +749,7 @@ void player_draw(SDL_Renderer *r, TTF_Font *font, TTF_Font *font_small,
             int bx = (win_w - lw) / 2 - pad;
             int by = sbar_h + pad * 2 + osd_row * row_h;
             fill_rounded_rect(r, bx, by, lw + pad * 2, lh + pad * 2, toast_rad,
-                              0, 0, 0, 180);
+                              t->highlight_bg.r, t->highlight_bg.g, t->highlight_bg.b, 230);
             draw_text(r, font, label, bx + pad, by + pad, lw,
                       t->highlight_text.r, t->highlight_text.g, t->highlight_text.b);
             osd_row++;
@@ -729,7 +761,7 @@ void player_draw(SDL_Renderer *r, TTF_Font *font, TTF_Font *font_small,
             int bx = (win_w - lw) / 2 - pad;
             int by = sbar_h + pad * 2 + osd_row * row_h;
             fill_rounded_rect(r, bx, by, lw + pad * 2, lh + pad * 2, toast_rad,
-                              0, 0, 0, 180);
+                              t->highlight_bg.r, t->highlight_bg.g, t->highlight_bg.b, 230);
             draw_text(r, font, p->audio_osd_label, bx + pad, by + pad, lw,
                       t->highlight_text.r, t->highlight_text.g, t->highlight_text.b);
             osd_row++;
@@ -741,9 +773,26 @@ void player_draw(SDL_Renderer *r, TTF_Font *font, TTF_Font *font_small,
             int bx = (win_w - lw) / 2 - pad;
             int by = sbar_h + pad * 2 + osd_row * row_h;
             fill_rounded_rect(r, bx, by, lw + pad * 2, lh + pad * 2, toast_rad,
-                              0, 0, 0, 180);
+                              t->highlight_bg.r, t->highlight_bg.g, t->highlight_bg.b, 230);
             draw_text(r, font, p->sub_osd_label, bx + pad, by + pad, lw,
                       t->highlight_text.r, t->highlight_text.g, t->highlight_text.b);
         }
+    }
+
+    /* Sleep/wake resume toast — centered on screen */
+    if (p->wake_osd_visible) {
+        const char *label = "Resuming\xe2\x80\xa6";  /* "Resuming…" UTF-8 */
+        int lw = 0, lh2 = 0;
+        TTF_SizeUTF8(font, label, &lw, &lh2);
+        int hpad = sc(20, win_w);
+        int vpad = sc(12, win_w);
+        int bw = lw + hpad * 2;
+        int bh = lh2 + vpad * 2;
+        int bx = (win_w - bw) / 2;
+        int by = (win_h - bh) / 2;
+        fill_rounded_rect(r, bx, by, bw, bh, sc(16, win_w),
+                          t->highlight_bg.r, t->highlight_bg.g, t->highlight_bg.b, 230);
+        draw_text(r, font, label, bx + hpad, by + vpad, lw,
+                  t->highlight_text.r, t->highlight_text.g, t->highlight_text.b);
     }
 }

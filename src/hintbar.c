@@ -92,44 +92,86 @@ static void draw_text_at(SDL_Renderer *r, TTF_Font *font, const char *text,
  * Glyph helpers — all colours come from the active theme
  * ---------------------------------------------------------------------- */
 
-/* Width of the glyph for a given button name + glyph height. */
-static int glyph_width(TTF_Font *font_small, const char *btn, int glyph_h) {
+/* Width of a single (non-compound) glyph. */
+static int single_glyph_width(TTF_Font *f, const char *btn, int glyph_h) {
     if (is_circle(btn)) {
-        return glyph_h;             /* circle: width == height */
+        return glyph_h;
     } else {
         int tw = 0, dummy = 0;
-        TTF_SizeUTF8(font_small, btn, &tw, &dummy);
-        int w = tw + h_pad(font_small) * 2;
+        TTF_SizeUTF8(f, btn, &tw, &dummy);
+        int w = tw + h_pad(f) * 2;
         if (w < glyph_h) w = glyph_h;
         return w;
     }
 }
 
-/* Draw one glyph at (x, cy), return x after the glyph. */
-static int draw_glyph(SDL_Renderer *r, TTF_Font *font_small,
-                      const char *btn, int x, int cy, int glyph_h,
-                      const Theme *theme) {
-    int rad = glyph_h / 2;
-    Uint8 bgR = theme->highlight_bg.r;
-    Uint8 bgG = theme->highlight_bg.g;
-    Uint8 bgB = theme->highlight_bg.b;
-    Uint8 fgR = theme->highlight_text.r;
-    Uint8 fgG = theme->highlight_text.g;
-    Uint8 fgB = theme->highlight_text.b;
+/* Width of a possibly-compound glyph ("START+X" → two pills + "+" connector). */
+static int glyph_width(TTF_Font *f, const char *btn, int glyph_h) {
+    if (!strchr(btn, '+') || is_circle(btn))
+        return single_glyph_width(f, btn, glyph_h);
+    char buf[64];
+    strncpy(buf, btn, 63); buf[63] = '\0';
+    int gap = h_pad(f) / 2, pw = 0, dummy = 0;
+    TTF_SizeUTF8(f, "+", &pw, &dummy);
+    int w = 0, first = 1;
+    for (char *p = buf; ; ) {
+        char *sep = strchr(p, '+');
+        if (sep) *sep = '\0';
+        if (!first) w += gap + pw + gap;
+        w += single_glyph_width(f, p, glyph_h);
+        first = 0;
+        if (sep) p = sep + 1; else break;
+    }
+    return w;
+}
 
+/* Draw one single (non-compound) glyph at (x, cy), return x after it. */
+static int draw_single_glyph(SDL_Renderer *r, TTF_Font *f,
+                              const char *btn, int x, int cy, int glyph_h,
+                              const Theme *theme) {
+    int rad = glyph_h / 2;
+    Uint8 bgR = theme->highlight_bg.r, bgG = theme->highlight_bg.g, bgB = theme->highlight_bg.b;
+    Uint8 fgR = theme->highlight_text.r, fgG = theme->highlight_text.g, fgB = theme->highlight_text.b;
     if (is_circle(btn)) {
         fill_circle(r, x + rad, cy, rad, bgR, bgG, bgB);
-        draw_text_centred(r, font_small, btn, x + rad, cy, fgR, fgG, fgB);
+        draw_text_centred(r, f, btn, x + rad, cy, fgR, fgG, fgB);
         return x + glyph_h;
     } else {
         int tw = 0, dummy = 0;
-        TTF_SizeUTF8(font_small, btn, &tw, &dummy);
-        int w = tw + h_pad(font_small) * 2;
+        TTF_SizeUTF8(f, btn, &tw, &dummy);
+        int w = tw + h_pad(f) * 2;
         if (w < glyph_h) w = glyph_h;
         fill_pill(r, x, cy - rad, w, glyph_h, bgR, bgG, bgB);
-        draw_text_centred(r, font_small, btn, x + w / 2, cy, fgR, fgG, fgB);
+        draw_text_centred(r, f, btn, x + w / 2, cy, fgR, fgG, fgB);
         return x + w;
     }
+}
+
+/* Draw one glyph at (x, cy); handles compound "A+B" as two pills with "+" between.
+   Returns x after the glyph. */
+static int draw_glyph(SDL_Renderer *r, TTF_Font *f,
+                      const char *btn, int x, int cy, int glyph_h,
+                      const Theme *theme) {
+    if (!strchr(btn, '+') || is_circle(btn))
+        return draw_single_glyph(r, f, btn, x, cy, glyph_h, theme);
+    char buf[64];
+    strncpy(buf, btn, 63); buf[63] = '\0';
+    int gap = h_pad(f) / 2, pw = 0, dummy = 0;
+    TTF_SizeUTF8(f, "+", &pw, &dummy);
+    int cx = x, first = 1;
+    for (char *p = buf; ; ) {
+        char *sep = strchr(p, '+');
+        if (sep) *sep = '\0';
+        if (!first) {
+            draw_text_centred(r, f, "+", cx + gap + pw / 2, cy,
+                theme->secondary.r, theme->secondary.g, theme->secondary.b);
+            cx += gap + pw + gap;
+        }
+        cx = draw_single_glyph(r, f, p, cx, cy, glyph_h, theme);
+        first = 0;
+        if (sep) p = sep + 1; else break;
+    }
+    return cx;
 }
 
 /* -------------------------------------------------------------------------

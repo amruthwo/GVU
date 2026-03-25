@@ -186,10 +186,10 @@ void config_load(const char *path) {
             g_tmdb_key[sizeof(g_tmdb_key) - 1] = '\0';
         } else if (strcasecmp(key, "layout") == 0) {
             int v = atoi(val);
-            if (v >= 0 && v <= 2) g_layout = v;
+            if (v >= 0 && v < 4) g_layout = v;
         } else if (strcasecmp(key, "season_layout") == 0) {
             int v = atoi(val);
-            if (v >= 0 && v <= 2) g_season_layout = v;
+            if (v >= 0 && v < 4) g_season_layout = v;
         } else if (strcasecmp(key, "sub_lang") == 0) {
             strncpy(g_sub_lang, val, sizeof(g_sub_lang) - 1);
             g_sub_lang[sizeof(g_sub_lang) - 1] = '\0';

@@ -406,11 +406,6 @@ int main(int argc, char *argv[]) {
     char     sub_toast_msg[128] = {0};
     Uint32   sub_toast_hide_at  = 0;
 #endif
-#ifdef GVU_A30
-    /* Sleep/wake detection: track SDL_GetTicks gap between frames.
-       A gap > 2s while playing means the device woke from sleep. */
-    Uint32 wake_prev_frame = 0;
-#endif
 
     /* Resume-prompt state */
     char   resume_path[1024] = {0};
@@ -449,6 +444,17 @@ int main(int argc, char *argv[]) {
     Uint32       menu_down_at   = 0;
     TutorialState tutorial      = { .active = !config_firstrun_done(), .slide = 0 };
 
+#ifdef GVU_A30
+    /* Sleep/wake detection: track SDL_GetTicks gap between frames.
+       A gap > 2s while playing means the device woke from sleep. */
+    Uint32 wake_prev_frame = 0;
+    /* Diagnostic: log clock vs wall-time for N seconds after each wake */
+    Uint32 wake_diag_until  = 0;
+    Uint32 wake_diag_t0     = 0;
+    double wake_diag_pos0   = 0.0;
+    Uint32 wake_diag_last   = 0;
+#endif
+
     int      running  = 1;
     Uint32   frame_ms = 1000 / FPS_CAP;
 
@@ -467,9 +473,6 @@ int main(int argc, char *argv[]) {
 
 #ifdef GVU_A30
         /* Primary sleep/wake detection: large gap in frame timestamps.
-           The main loop runs at 60 fps (~16ms/frame); a gap > 2000ms means
-           the device was sleeping.  The ALSA DAC is reset to volume 0 on
-           wake — reinit the audio device and restore it.
            wake_prev_frame is only updated while actively playing so that
            slow player_open calls don't look like a sleep/wake gap. */
         if (mode == MODE_PLAYBACK && player.state != PLAYER_STOPPED) {
@@ -477,22 +480,78 @@ int main(int argc, char *argv[]) {
                     frame_start - wake_prev_frame > 2000) {
                 fprintf(stderr, "audio_wake: gap %ums — sleep/wake\n",
                         frame_start - wake_prev_frame);
+                double wake_seek_pos = audio_get_clock(&player.audio);
+                fprintf(stderr, "audio_wake: seek target=%.3f\n", wake_seek_pos);
                 audio_wake(&player.audio);
                 a30_screen_wake();
-                /* Re-apply pause state — audio_wake unpauses the device */
-                if (player.state == PLAYER_PAUSED)
-                    SDL_PauseAudioDevice(player.audio.dev, 1);
+                player_seek_to(&player, wake_seek_pos);
+                SDL_Delay(600);
+                {
+                    VideoFrame vf;
+                    int drained = 0;
+                    double audio_start = audio_get_clock(&player.audio);
+                    while (video_peek_frame(&player.video, &vf) &&
+                           vf.pts > audio_start + 1.0) {
+                        video_pop_frame(&player.video);
+                        drained++;
+                    }
+                    if (drained)
+                        fprintf(stderr, "audio_wake: drained %d stale video frame(s) (audio_start=%.3f)\n",
+                                drained, audio_start);
+                }
+                {
+                    double bps = AUDIO_OUT_RATE * AUDIO_OUT_CHANNELS * 2.0;
+                    SDL_LockMutex(player.audio.ring.mutex);
+                    double rd = player.audio.ring.filled / bps;
+                    SDL_UnlockMutex(player.audio.ring.mutex);
+                    SDL_LockMutex(player.audio.clock_mutex);
+                    double clk = player.audio.clock;
+                    SDL_UnlockMutex(player.audio.clock_mutex);
+                    fprintf(stderr, "audio_wake: pre-unpause clock=%.3f ring=%.3fs get_clock=%.3f\n",
+                            clk, rd, audio_get_clock(&player.audio));
+                }
+                player_show_wake_toast(&player);
+                if (player.audio.dev)
+                    atomic_store(&player.audio.wake_silence_until,
+                                 SDL_GetTicks() + 500);
+                if (player.state == PLAYER_PLAYING && player.audio.dev)
+                    SDL_PauseAudioDevice(player.audio.dev, 0);
                 player_show_osd(&player);
-                /* Reset the wake timer to NOW (after audio_wake returns) so
-                   the time spent inside audio_wake doesn't look like another
-                   sleep gap on the next frame, causing a cascade. */
                 wake_prev_frame = SDL_GetTicks();
+                wake_diag_t0    = wake_prev_frame;
+                wake_diag_pos0  = audio_get_clock(&player.audio);
+                wake_diag_until = wake_prev_frame + 5000;
+                wake_diag_last  = 0;
             } else {
                 wake_prev_frame = frame_start;
             }
         } else {
             wake_prev_frame = 0;
         }
+
+        /* Post-wake diagnostic: every 500ms log clock drift and video state */
+        if (wake_diag_until && frame_start < wake_diag_until &&
+                frame_start - wake_diag_last >= 500) {
+            wake_diag_last = frame_start;
+            double gc      = audio_get_clock(&player.audio);
+            double elapsed = (frame_start - wake_diag_t0) / 1000.0;
+            double drift   = gc - wake_diag_pos0 - elapsed;
+            VideoFrame vf;
+            double vpts = -1.0;
+            int vcount  = 0;
+            if (video_peek_frame(&player.video, &vf)) { vpts = vf.pts; }
+            SDL_LockMutex(player.video.frame_queue.mutex);
+            vcount = player.video.frame_queue.count;
+            SDL_UnlockMutex(player.video.frame_queue.mutex);
+            SDL_LockMutex(player.audio.ring.mutex);
+            double ring_s = player.audio.ring.filled /
+                            (AUDIO_OUT_RATE * AUDIO_OUT_CHANNELS * 2.0);
+            SDL_UnlockMutex(player.audio.ring.mutex);
+            fprintf(stderr, "wake_diag +%.1fs: gc=%.3f vpts=%.3f vq=%d ring=%.2fs drift=%+.3fs\n",
+                    elapsed, gc, vpts, vcount, ring_s, drift);
+        }
+        if (frame_start >= wake_diag_until && wake_diag_until)
+            wake_diag_until = 0;
 
         a30_poll_events();
 #endif
@@ -912,9 +971,18 @@ int main(int argc, char *argv[]) {
             } else { /* MODE_PLAYBACK */
                 if (ev.type == SDL_KEYUP) {
                     if (ev.key.keysym.sym == SDLK_RETURN) {
-                        /* START released: fire toggle only if not used as modifier */
-                        if (!start_used_as_modifier)
+                        /* START released: fire toggle only if not used as modifier.
+                           If no subtitle is loaded, trigger the downloader instead. */
+                        if (!start_used_as_modifier) {
+#ifdef GVU_A30
+                            if (player.subtitle.count > 0)
+                                player_toggle_subs(&player);
+                            else
+                                sub_workflow_trigger(&sub_wf, player.path, 0, 1);
+#else
                             player_toggle_subs(&player);
+#endif
+                        }
                         start_held = 0;
                         start_used_as_modifier = 0;
                     }
@@ -933,8 +1001,17 @@ int main(int argc, char *argv[]) {
                         switch (ev.key.keysym.sym) {
                             case SDLK_LEFT:  player_sub_adjust(&player, -0.5); break;
                             case SDLK_RIGHT: player_sub_adjust(&player, +0.5); break;
-                            case SDLK_UP:    player_sub_adjust(&player, +5.0); break;
-                            case SDLK_DOWN:  player_sub_adjust(&player, -5.0); break;
+                            case SDLK_UP:    player_sub_cycle_speed(&player); break;
+                            case SDLK_DOWN:
+                                /* reset both speed and delay */
+                                player.subtitle.speed     = 1.0f;
+                                player.subtitle.delay_sec = 0.0;
+                                snprintf(player.sub_osd_label,
+                                         sizeof(player.sub_osd_label),
+                                         "Sub reset");
+                                player.sub_osd_visible = 1;
+                                player.sub_osd_hide_at = SDL_GetTicks() + 1500;
+                                break;
 #ifdef GVU_A30
                             case SDLK_LSHIFT: /* X — force re-download subtitles */
                                 sub_workflow_trigger(&sub_wf, player.path, 1, 1);
@@ -988,10 +1065,8 @@ int main(int argc, char *argv[]) {
                                 resume_save(player.path,
                                             audio_get_clock(&player.audio),
                                             player.probe.duration_sec);
-#ifdef GVU_A30
-                                wake_prev_frame = 0;   /* don't treat file-open time as sleep/wake */
-#endif
                                 player_close(&player);
+                                wake_prev_frame = 0;
                                 char errbuf[256] = {0};
                                 if (do_play(&player, files[nidx].path, renderer,
                                             &state, &lib,
@@ -1032,10 +1107,8 @@ int main(int argc, char *argv[]) {
                                 resume_save(player.path,
                                             audio_get_clock(&player.audio),
                                             player.probe.duration_sec);
-#ifdef GVU_A30
-                                wake_prev_frame = 0;   /* don't treat file-open time as sleep/wake */
-#endif
                                 player_close(&player);
+                                wake_prev_frame = 0;
                                 char errbuf[256] = {0};
                                 if (do_play(&player, files[nidx].path, renderer,
                                             &state, &lib,

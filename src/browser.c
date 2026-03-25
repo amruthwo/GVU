@@ -45,6 +45,16 @@ static LayoutMetrics compute_metrics(BrowserLayout layout, int win_w, int win_h)
             m.tile_h = (m.content_h - m.padding * 4) / 3;
             m.img_h  = m.tile_h - m.name_h - m.padding;
             break;
+        case LAYOUT_SHOWCASE:
+            /* Used only for navigation math (cols=1, rows_visible=1).
+               Actual rendering is handled by draw_showcase(). */
+            m.cols       = 1;
+            m.tile_w     = win_w;
+            m.tile_h     = m.content_h;
+            m.img_h      = m.tile_h;
+            m.name_h     = 0;
+            m.rows_visible = 1;
+            return m;   /* skip common rows_visible computation below */
         default: /* LAYOUT_LIST */
             m.cols        = 1;
             m.tile_w      = win_w - m.padding * 2;
@@ -137,6 +147,41 @@ static void fill_rounded_rect(SDL_Renderer *r, int x, int y, int w, int h,
 static void fill_pill_bg(SDL_Renderer *r, int x, int y, int w, int h,
                          Uint8 R, Uint8 G, Uint8 B, Uint8 A) {
     fill_rounded_rect(r, x, y, w, h, h / 2, R, G, B, A);
+}
+
+/* Scale-to-fill (centre-crop) render: cover fills (x,y,w,h) exactly. */
+static void render_cover_fill(SDL_Renderer *r, SDL_Texture *tex,
+                               int x, int y, int w, int h) {
+    int tw, th;
+    SDL_QueryTexture(tex, NULL, NULL, &tw, &th);
+    float sx = (float)w / tw, sy = (float)h / th;
+    float scale = (sx > sy) ? sx : sy;
+    int sw = (int)((float)w / scale + 0.5f);
+    int sh = (int)((float)h / scale + 0.5f);
+    if (sw > tw) sw = tw;
+    if (sh > th) sh = th;
+    SDL_Rect src = { (tw - sw) / 2, (th - sh) / 2, sw, sh };
+    SDL_Rect dst = { x, y, w, h };
+    SDL_RenderCopy(r, tex, &src, &dst);
+}
+
+/* Paint the window background colour over the four rounded corners of a
+   previously-drawn image to give it the appearance of rounded corners.
+   Only correct against a solid, uniform background. */
+static void mask_corners(SDL_Renderer *r, int x, int y, int w, int h, int rad,
+                          Uint8 R, Uint8 G, Uint8 B) {
+    SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_NONE);
+    SDL_SetRenderDrawColor(r, R, G, B, 0xff);
+    for (int i = 0; i < rad; i++) {
+        float fy   = (float)(rad - i);
+        int   dx   = (int)sqrtf((float)(rad * rad) - fy * fy);
+        int   fill = rad - dx;
+        if (fill <= 0) continue;
+        SDL_RenderDrawLine(r, x,            y + i,           x + fill - 1, y + i);
+        SDL_RenderDrawLine(r, x + w - fill, y + i,           x + w - 1,   y + i);
+        SDL_RenderDrawLine(r, x,            y + h - 1 - i,   x + fill - 1, y + h - 1 - i);
+        SDL_RenderDrawLine(r, x + w - fill, y + h - 1 - i,   x + w - 1,   y + h - 1 - i);
+    }
 }
 
 /* -------------------------------------------------------------------------
@@ -900,6 +945,94 @@ static void draw_hint_bar(SDL_Renderer *renderer, TTF_Font *font,
 }
 
 /* -------------------------------------------------------------------------
+ * Showcase carousel (LAYOUT_SHOWCASE)
+ * ---------------------------------------------------------------------- */
+
+static void draw_showcase(SDL_Renderer *renderer, TTF_Font *font, TTF_Font *font_small,
+                          BrowserState *state, CoverCache *cache,
+                          const MediaLibrary *lib, SDL_Texture *default_cover,
+                          const Theme *t, int win_w, int win_h) {
+    int count = lib->folder_count;
+    if (count == 0) return;
+    if (state->selected < 0)       state->selected = 0;
+    if (state->selected >= count)  state->selected = count - 1;
+
+    int sel        = state->selected;
+    int hint_bar_h = sc(24, win_w);
+    int content_h  = win_h - hint_bar_h;
+
+    /* Geometry */
+    int peek_w = sc(44, win_w);   /* visible slice of neighbouring cover */
+    int gap    = sc(10, win_w);   /* space between peeking edge and main cover */
+    int cover_w = win_w - 2 * (peek_w + gap);
+    int cover_x = (win_w - cover_w) / 2;
+    int rad     = sc(16, win_w);
+
+    int fh     = TTF_FontHeight(font);
+    int fsh    = TTF_FontHeight(font_small);
+    int pad_t  = sc(14, win_h);
+    int name_h = fh  + sc(6, win_h);
+    int ctr_h  = fsh + sc(4, win_h);
+    int cover_h = content_h - pad_t - sc(8, win_h) - name_h - ctr_h - sc(4, win_h);
+    int cover_y = pad_t;
+    int name_y  = cover_y + cover_h + sc(8, win_h);
+    int ctr_y   = name_y + name_h;
+
+    /* Left peek (sel−1) — fill mode so the slice always shows image content */
+    if (sel > 0) {
+        SDL_Texture *tex = get_cover(renderer, cache, lib, sel - 1, default_cover);
+        int lx = cover_x - gap - cover_w;
+        render_cover_fill(renderer, tex, lx, cover_y, cover_w, cover_h);
+        mask_corners(renderer, lx, cover_y, cover_w, cover_h, rad,
+                     t->background.r, t->background.g, t->background.b);
+    }
+    /* Right peek (sel+1) — fill mode */
+    if (sel < count - 1) {
+        SDL_Texture *tex = get_cover(renderer, cache, lib, sel + 1, default_cover);
+        int rx = cover_x + cover_w + gap;
+        render_cover_fill(renderer, tex, rx, cover_y, cover_w, cover_h);
+        mask_corners(renderer, rx, cover_y, cover_w, cover_h, rad,
+                     t->background.r, t->background.g, t->background.b);
+    }
+
+    /* Main cover — fit mode (whole image visible), rounded corners on actual image rect */
+    SDL_Texture *main_tex = get_cover(renderer, cache, lib, sel, default_cover);
+    {
+        int tw, th;
+        SDL_QueryTexture(main_tex, NULL, NULL, &tw, &th);
+        float scale = ((float)cover_w / tw < (float)cover_h / th)
+                      ? (float)cover_w / tw : (float)cover_h / th;
+        int dw = (int)(tw * scale), dh = (int)(th * scale);
+        int ix = cover_x + (cover_w - dw) / 2;
+        int iy = cover_y + (cover_h - dh) / 2;
+        SDL_Rect dst = { ix, iy, dw, dh };
+        SDL_RenderCopy(renderer, main_tex, NULL, &dst);
+        mask_corners(renderer, ix, iy, dw, dh, rad,
+                     t->background.r, t->background.g, t->background.b);
+    }
+
+    /* Folder name — centred below cover */
+    {
+        const char *name = lib->folders[sel].name;
+        int tw = 0, dummy = 0;
+        TTF_SizeUTF8(font, name, &tw, &dummy);
+        int nx = (win_w - (tw < cover_w ? tw : cover_w)) / 2;
+        draw_text(renderer, font, name, nx, name_y, cover_w,
+                  t->text.r, t->text.g, t->text.b);
+    }
+
+    /* Counter "X / Y" — centred, secondary colour */
+    {
+        char ctr[32];
+        snprintf(ctr, sizeof(ctr), "%d / %d", sel + 1, count);
+        int tw = 0, dummy = 0;
+        TTF_SizeUTF8(font_small, ctr, &tw, &dummy);
+        draw_text(renderer, font_small, ctr, (win_w - tw) / 2, ctr_y, win_w,
+                  t->secondary.r, t->secondary.g, t->secondary.b);
+    }
+}
+
+/* -------------------------------------------------------------------------
  * Public API
  * ---------------------------------------------------------------------- */
 
@@ -927,8 +1060,6 @@ void browser_draw(SDL_Renderer *renderer, TTF_Font *font, TTF_Font *font_small,
                   BrowserState *state, CoverCache *cache, MediaLibrary *lib,
                   SDL_Texture *default_cover, const Theme *theme,
                   int win_w, int win_h) {
-    (void)font_small;
-
     SDL_SetRenderDrawColor(renderer,
         theme->background.r, theme->background.g, theme->background.b, 0xff);
     SDL_RenderClear(renderer);
@@ -939,6 +1070,9 @@ void browser_draw(SDL_Renderer *renderer, TTF_Font *font, TTF_Font *font_small,
             draw_text(renderer, font, "No media found.",
                       padding, padding, win_w - padding * 2,
                       theme->secondary.r, theme->secondary.g, theme->secondary.b);
+        } else if (state->layout == LAYOUT_SHOWCASE) {
+            draw_showcase(renderer, font, font_small, state, cache, lib,
+                          default_cover, theme, win_w, win_h);
         } else {
             draw_folder_grid(renderer, font, state, cache, lib,
                              default_cover, theme, win_w, win_h);
@@ -1083,6 +1217,8 @@ int browser_handle_event(BrowserState *state, const MediaLibrary *lib,
         }
         if (key == SDLK_RCTRL || key == SDLK_TAB) {
             state->season_layout = (state->season_layout + 1) % LAYOUT_COUNT;
+            if (state->season_layout == LAYOUT_SHOWCASE)   /* showcase is folders-only */
+                state->season_layout = (state->season_layout + 1) % LAYOUT_COUNT;
             state->action = BROWSER_ACTION_LAYOUT_CHANGED;
             return 1;
         }

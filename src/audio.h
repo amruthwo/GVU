@@ -49,6 +49,10 @@ typedef struct {
                                              writes, no clock updates) until the flush sentinel
                                              arrives, keeping the clock pinned at the seek
                                              target so video sync is never disturbed */
+    _Atomic Uint32     wake_silence_until; /* SDL_GetTicks() deadline: callback outputs silence
+                                              without consuming the ring until this expires, so
+                                              the ALSA post-wake underrun storm drains against
+                                              empty output rather than real audio data */
     double             clock;       /* PTS of last decoded sample (seconds) */
     SDL_mutex         *clock_mutex;
 } AudioCtx;
