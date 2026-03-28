@@ -5,7 +5,26 @@
 #include "decoder.h"
 
 /* -------------------------------------------------------------------------
- * Frame queue — decoded video frames waiting to be rendered
+ * Raw frame queue — YUV frames between H.264 decode thread and sws thread
+ * ---------------------------------------------------------------------- */
+
+#define VIDEO_RAW_QUEUE_SIZE 2
+
+typedef struct {
+    AVFrame *frame;   /* NULL = EOS/flush sentinel */
+    double   pts;
+} RawVideoFrame;
+
+typedef struct {
+    RawVideoFrame frames[VIDEO_RAW_QUEUE_SIZE];
+    int           head, tail, count;
+    SDL_mutex    *mutex;
+    SDL_cond     *not_empty;
+    SDL_cond     *not_full;
+} RawQueue;
+
+/* -------------------------------------------------------------------------
+ * Frame queue — BGRA frames waiting to be rendered
  * ---------------------------------------------------------------------- */
 
 #define VIDEO_FRAME_QUEUE_SIZE 4
@@ -33,8 +52,11 @@ typedef struct {
     int                sws_src_w, sws_src_h;
     int                sws_src_fmt;   /* cached enum AVPixelFormat */
     int                native_w, native_h;   /* video stream dimensions */
+    int                tex_w, tex_h;         /* pre-scaled texture dimensions */
+    RawQueue           raw_queue;     /* H.264→sws pipeline buffer */
     FrameQueue         frame_queue;
-    SDL_Thread        *thread;
+    SDL_Thread        *thread;       /* H.264 decode thread */
+    SDL_Thread        *sws_thread;   /* sws conversion thread */
     PacketQueue       *pkt_queue;     /* borrowed from DemuxCtx */
     AVRational         time_base;
     int                abort;

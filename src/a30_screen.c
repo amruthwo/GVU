@@ -47,6 +47,9 @@
 #include <linux/input.h>
 #include <errno.h>
 #include <SDL2/SDL.h>
+#ifdef __ARM_NEON__
+#include <arm_neon.h>
+#endif
 
 /* -------------------------------------------------------------------------
  * Framebuffer state
@@ -69,7 +72,13 @@ static size_t   s_fb_size        = 0;
 static int      s_fb_stride      = PANEL_W; /* pixels per row */
 static int      s_fb_yoffset     = 0;       /* currently displayed page (rows) */
 static int      s_fb_back_yoff   = 0;       /* back buffer page we write to (rows) */
-static int      s_fb_pan_disabled = 0;      /* set after first wake — FBIOPAN_DISPLAY blocks forever on sunxi post-wake */
+/* FBIOPAN_DISPLAY blocks for a full display-scan period (~28ms) when called
+ * shortly after vsync, because the fast rotation finishes near the TOP of the
+ * scan rather than the bottom.  Disabling pan (always writing to the
+ * displayed page) eliminates this wait entirely: flip drops from ~28ms to
+ * ~3ms, the main loop runs at 60fps, and the pipeline reaches ~87% speed on
+ * 720p 60fps content.  Tearing is the trade-off; for video it is subtle. */
+static int      s_fb_pan_disabled = 1;      /* 1 = direct write, no FBIOPAN_DISPLAY */
 
 static int      s_input_fd    = -1;
 
@@ -159,16 +168,31 @@ void a30_flip(SDL_Surface *surface) {
      * Loop order: outer = dst rows (r), inner = dst cols (c).
      * This writes SEQUENTIALLY to each dst row, which is critical for
      * non-cached framebuffer memory: sequential writes fill the CPU write
-     * buffer and flush in bursts (~6ms for 1.2 MB) instead of the original
-     * strided pattern which produced a separate bus transaction per pixel
-     * (~30ms).  Reads from the cached SDL surface are strided but can be
-     * prefetched and tolerate latency.  Net saving: ~24ms per frame. */
+     * buffer and flush in bursts instead of per-pixel bus transactions. */
     for (int r = 0; r < PANEL_H; r++) {
         const int src_x = GVU_W - 1 - r;   /* src column for this dst row */
         Uint32 *out = dst + (size_t)r * (size_t)s_fb_stride;
+#ifdef __ARM_NEON__
+        /* Process 4 pixels at a time: 4 scalar loads + 1 NEON 16-byte store.
+         * The wider store reduces write transactions to the uncached framebuffer. */
+        const uint32x4_t alpha_v = vdupq_n_u32(0xFF000000u);
+        unsigned int c = 0;
+        for (; c + 4 <= (unsigned)PANEL_W; c += 4) {
+            uint32_t tmp[4];
+            tmp[0] = src[(c+0) * pitch + src_x];
+            tmp[1] = src[(c+1) * pitch + src_x];
+            tmp[2] = src[(c+2) * pitch + src_x];
+            tmp[3] = src[(c+3) * pitch + src_x];
+            vst1q_u32(out + c, vorrq_u32(vld1q_u32(tmp), alpha_v));
+        }
+        for (; c < (unsigned)PANEL_W; c++) {
+            out[c] = src[(size_t)c * (size_t)pitch + (size_t)src_x] | 0xFF000000u;
+        }
+#else
         for (int c = 0; c < PANEL_W; c++) {
             out[c] = src[c * pitch + src_x] | 0xFF000000u;
         }
+#endif
     }
 
     SDL_UnlockSurface(surface);

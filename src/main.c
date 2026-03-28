@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <time.h>
 #include <signal.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -266,7 +267,7 @@ static int do_play(Player *player, const char *path, SDL_Renderer *renderer,
 
 int main(int argc, char *argv[]) {
 #ifdef GVU_A30
-    int win_w = 640, win_h = 480;  /* A30 panel is always 640×480 */
+    int win_w = 640, win_h = 480;  /* A30 panel: landscape 640×480 */
     (void)argc; (void)argv;
 #else
     /* Optional: ./gvu [width height]  — for testing other device resolutions.
@@ -455,8 +456,8 @@ int main(int argc, char *argv[]) {
     Uint32 wake_diag_last   = 0;
 #endif
 
-    int      running  = 1;
-    Uint32   frame_ms = 1000 / FPS_CAP;
+    int      running      = 1;
+    long     frame_ns     = 1000000000L / FPS_CAP; /* nanoseconds per frame */
 
     while (running) {
         /* Honor SIGTERM / SIGINT */
@@ -469,7 +470,9 @@ int main(int argc, char *argv[]) {
             break;
         }
 
-        Uint32 frame_start = SDL_GetTicks();
+        Uint32 frame_start = SDL_GetTicks(); /* ms — used for wake detection */
+        struct timespec ts_frame_start;
+        clock_gettime(CLOCK_MONOTONIC, &ts_frame_start);
 
 #ifdef GVU_A30
         /* Primary sleep/wake detection: large gap in frame timestamps.
@@ -1580,8 +1583,14 @@ int main(int argc, char *argv[]) {
         a30_flip(a30_surf);
 #endif
 
-        Uint32 elapsed = SDL_GetTicks() - frame_start;
-        if (elapsed < frame_ms) SDL_Delay(frame_ms - elapsed);
+        struct timespec ts_now;
+        clock_gettime(CLOCK_MONOTONIC, &ts_now);
+        long elapsed_ns = (ts_now.tv_sec  - ts_frame_start.tv_sec)  * 1000000000L
+                        + (ts_now.tv_nsec - ts_frame_start.tv_nsec);
+        if (elapsed_ns < frame_ns) {
+            struct timespec sleep_ts = { 0, frame_ns - elapsed_ns };
+            nanosleep(&sleep_ts, NULL);
+        }
     }
 
     /* Cleanup */

@@ -276,7 +276,6 @@ int audio_open(AudioCtx *a, AVCodecParameters *codec_params,
         avcodec_free_context(&a->codec_ctx);
         return -1;
     }
-
     return 0;
 }
 

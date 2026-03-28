@@ -48,12 +48,15 @@ int player_open(Player *p, const char *path, SDL_Renderer *renderer,
             return -1;
         }
 
-        /* Create the YUV streaming texture at the video's native resolution */
+        /* ARGB8888 texture: sws already converted to BGRA (= ARGB8888 on
+           little-endian ARM), so SDL_RenderCopy does a plain blit with no
+           internal YUV→RGB conversion.  Pre-scaled to display fit-rect on A30
+           so the blit is near-1:1 regardless of source resolution. */
         p->video_tex = SDL_CreateTexture(renderer,
-                                         SDL_PIXELFORMAT_IYUV,
+                                         SDL_PIXELFORMAT_ARGB8888,
                                          SDL_TEXTUREACCESS_STREAMING,
-                                         p->video.native_w,
-                                         p->video.native_h);
+                                         p->video.tex_w,
+                                         p->video.tex_h);
         if (!p->video_tex) {
             fprintf(stderr, "SDL_CreateTexture: %s\n", SDL_GetError());
             video_close(&p->video);
@@ -367,12 +370,12 @@ int player_update(Player *p) {
             continue;
         }
 
-        /* Frame is due (or slightly late) — upload to texture */
+        /* Frame is due (or slightly late) — upload to texture.
+           Frame is packed BGRA from sws; SDL_UpdateTexture is a direct copy,
+           no colour-space conversion. */
         AVFrame *frame = vf.frame;
-        SDL_UpdateYUVTexture(p->video_tex, NULL,
-                             frame->data[0], frame->linesize[0],
-                             frame->data[1], frame->linesize[1],
-                             frame->data[2], frame->linesize[2]);
+        SDL_UpdateTexture(p->video_tex, NULL,
+                          frame->data[0], frame->linesize[0]);
         video_pop_frame(&p->video);
         updated = 1;
 
@@ -679,7 +682,7 @@ void player_draw(SDL_Renderer *r, TTF_Font *font, TTF_Font *font_small,
         {
             static const float zoom_t[] = { 0.0f, 0.5f, 1.0f }; /* FIT, WIDE, FILL */
             SDL_Rect src, dst;
-            video_zoom_rects(p->video.native_w, p->video.native_h,
+            video_zoom_rects(p->video.tex_w, p->video.tex_h,
                              win_w, win_h, zoom_t[p->zoom_mode], &src, &dst);
             SDL_RenderCopy(r, p->video_tex, &src, &dst);
         }
