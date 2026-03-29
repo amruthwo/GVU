@@ -8,7 +8,7 @@
  * Output format (fixed — swresample converts to this)
  * ---------------------------------------------------------------------- */
 
-#define AUDIO_OUT_RATE     44100
+#define AUDIO_OUT_RATE     48000        /* A30 ALSA native rate; avoids resampling */
 #define AUDIO_OUT_CHANNELS 2
 #define AUDIO_SDL_FORMAT   AUDIO_S16SYS  /* signed 16-bit, native endian */
 #define AUDIO_SDL_SAMPLES  4096          /* callback buffer size in frames */
@@ -17,7 +17,7 @@
  * Ring buffer — lock-free reads from SDL callback, locked writes from decoder
  * ---------------------------------------------------------------------- */
 
-#define AUDIO_RING_SIZE (1024 * 512)  /* 512 KB ≈ 3s at 44.1kHz stereo S16 */
+#define AUDIO_RING_SIZE (1024 * 512)  /* 512 KB ≈ 2.7s at 48kHz stereo S16 */
 
 typedef struct {
     uint8_t   *buf;

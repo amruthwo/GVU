@@ -12,12 +12,14 @@
 #define AV_SYNC_THRESHOLD_SEC  0.040   /* 40ms — within one frame at 25fps */
 #define AV_NOSYNC_THRESHOLD_SEC 0.15   /* drop frames further than 150ms behind */
 
+
 /* -------------------------------------------------------------------------
  * Open
  * ---------------------------------------------------------------------- */
 
 int player_open(Player *p, const char *path, SDL_Renderer *renderer,
                 char *errbuf, int errbuf_sz) {
+    float prev_vol = p->volume;   /* save before memset wipes it */
     memset(p, 0, sizeof(*p));
     snprintf(p->path, sizeof(p->path), "%s", path);
 
@@ -48,12 +50,19 @@ int player_open(Player *p, const char *path, SDL_Renderer *renderer,
             return -1;
         }
 
-        /* Create the YUV streaming texture at the video's native resolution */
+        /* ARGB8888 texture: sws already converted to BGRA (= ARGB8888 on
+           little-endian ARM), so SDL_RenderCopy does a plain blit with no
+           internal YUV→RGB conversion.  Pre-scaled to display fit-rect on A30
+           so the blit is near-1:1 regardless of source resolution. */
+        /* Linear filtering reduces aliasing when SDL_RenderCopy scales the
+           texture for WIDE/FILL zoom modes (nearest-neighbour is the default
+           and produces jagged edges on upscaled content). */
+        SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");
         p->video_tex = SDL_CreateTexture(renderer,
-                                         SDL_PIXELFORMAT_IYUV,
+                                         SDL_PIXELFORMAT_ARGB8888,
                                          SDL_TEXTUREACCESS_STREAMING,
-                                         p->video.native_w,
-                                         p->video.native_h);
+                                         p->video.tex_w,
+                                         p->video.tex_h);
         if (!p->video_tex) {
             fprintf(stderr, "SDL_CreateTexture: %s\n", SDL_GetError());
             video_close(&p->video);
@@ -63,8 +72,34 @@ int player_open(Player *p, const char *path, SDL_Renderer *renderer,
         }
     }
 
-    p->state      = PLAYER_STOPPED;
-    p->volume     = 1.0f;
+    p->state  = PLAYER_STOPPED;
+#ifdef GVU_A30
+    /* Read Soft Volume Master to sync the OSD to the device level.
+       GVU never writes SVM — SpruceOS owns it.  audio.volume stays 1.0
+       (passthrough) so SVM is the sole attenuator for the whole session. */
+    {
+        float svm_vol = (prev_vol > 0.0f) ? prev_vol : 0.8f;
+        FILE *amix = popen("/usr/bin/amixer sget 'Soft Volume Master' 2>/dev/null", "r");
+        if (amix) {
+            char line[256];
+            while (fgets(line, sizeof(line), amix)) {
+                int raw = 0;
+                char *b = strstr(line, "[");
+                if (b && sscanf(b, "[%d%%]", &raw) == 1) {
+                    svm_vol = raw / 100.0f;
+                    if (svm_vol > 1.0f) svm_vol = 1.0f;
+                    break;
+                }
+            }
+            pclose(amix);
+        }
+        p->volume = svm_vol;
+    }
+    atomic_store(&p->audio.volume, 1.0f);   /* passthrough — SpruceOS controls SVM */
+#else
+    p->volume = (prev_vol > 0.0f) ? prev_vol : 1.0f;
+    atomic_store(&p->audio.volume, p->volume);
+#endif
     p->brightness = 1.0f;
 
     sub_load(&p->subtitle, path);
@@ -109,17 +144,33 @@ void player_set_volume(Player *p, float vol) {
     if (vol < 0.0f) vol = 0.0f;
     if (vol > 1.0f) vol = 1.0f;
     p->volume = vol;
+    /* On A30, audio.volume is always 1.0 (passthrough).  SpruceOS controls
+       the Soft Volume Master hardware attenuator.  p->volume is OSD-only. */
+#ifndef GVU_A30
     atomic_store(&p->audio.volume, vol);
+#endif
     p->vol_osd_visible = 1;
     p->vol_osd_hide_at = SDL_GetTicks() + 1500;
 }
 
+/* SpruceOS uses 20 equal steps (1/20 = 0.05) for hardware VOL keys.
+   Match that step size so the OSD stays in sync with the device level. */
+#ifdef GVU_A30
+void player_volume_up(Player *p) { player_set_volume(p, p->volume + 0.05f); }
+void player_volume_dn(Player *p) { player_set_volume(p, p->volume - 0.05f); }
+#else
 void player_volume_up(Player *p) { player_set_volume(p, p->volume + 0.1f); }
 void player_volume_dn(Player *p) { player_set_volume(p, p->volume - 0.1f); }
+#endif
 
 void player_toggle_mute(Player *p) {
     p->muted = !p->muted;
+#ifdef GVU_A30
+    /* Mute via software silence; SVM is untouched. */
+    atomic_store(&p->audio.volume, p->muted ? 0.0f : 1.0f);
+#else
     atomic_store(&p->audio.volume, p->muted ? 0.0f : p->volume);
+#endif
     p->vol_osd_visible = 1;
     p->vol_osd_hide_at = SDL_GetTicks() + 1500;
 }
@@ -287,6 +338,9 @@ void player_close(Player *p) {
     demux_close(&p->demux);
 
     if (p->video_tex) { SDL_DestroyTexture(p->video_tex); p->video_tex = NULL; }
+#ifdef GVU_A30
+    if (p->a30_portrait_frame) { av_frame_free(&p->a30_portrait_frame); p->a30_portrait_frame = NULL; }
+#endif
     sub_free(&p->subtitle);
     p->state = PLAYER_STOPPED;
 }
@@ -357,7 +411,16 @@ int player_update(Player *p) {
         if (diff > AV_SYNC_THRESHOLD_SEC && !audio_done) {
             /* Frame is too early — display it later.
                If audio is done and the clock is frozen, skip this check
-               so the remaining video frames drain and EOS is detected. */
+               so the remaining video frames drain and EOS is detected.
+               If diff is absurdly large (> 1.5s), the audio clock regressed
+               after a backward seek: the ring filled from a keyframe before
+               the target, pushing audio_get_clock below the frames already
+               queued in the display zone.  Drop these stale frames immediately
+               so the pipeline doesn't deadlock. */
+            if (diff > 1.5) {
+                video_pop_frame(&p->video);
+                continue;
+            }
             break;
         }
 
@@ -367,12 +430,29 @@ int player_update(Player *p) {
             continue;
         }
 
-        /* Frame is due (or slightly late) — upload to texture */
+        /* Frame is due (or slightly late) — update display. */
         AVFrame *frame = vf.frame;
-        SDL_UpdateYUVTexture(p->video_tex, NULL,
-                             frame->data[0], frame->linesize[0],
-                             frame->data[1], frame->linesize[1],
-                             frame->data[2], frame->linesize[2]);
+#ifdef GVU_A30
+        if (p->video.portrait_direct) {
+            /* Portrait-direct path: steal the frame from the queue so
+               a30_flip_video() can blit it directly to the framebuffer.
+               av_frame_move_ref empties the queue slot; video_pop_frame
+               then safely frees the empty AVFrame shell. */
+            if (!p->a30_portrait_frame)
+                p->a30_portrait_frame = av_frame_alloc();
+            else
+                av_frame_unref(p->a30_portrait_frame);
+            av_frame_move_ref(p->a30_portrait_frame, frame);
+            video_pop_frame(&p->video);
+            updated = 1;
+            break;
+        }
+#endif
+        /* Normal path: upload to SDL texture.
+           Frame is packed BGRA from sws; SDL_UpdateTexture is a direct copy,
+           no colour-space conversion. */
+        SDL_UpdateTexture(p->video_tex, NULL,
+                          frame->data[0], frame->linesize[0]);
         video_pop_frame(&p->video);
         updated = 1;
 
@@ -500,8 +580,10 @@ static void draw_osd(SDL_Renderer *r, TTF_Font *font, TTF_Font *font_small,
     TTF_SizeUTF8(font, name, &name_w, &dur_dummy);
     int name_x = (win_w - name_w) / 2;
     if (name_x < sc(8, win_w)) name_x = sc(8, win_w);
+    /* OSD background is always dark (rgba 0,0,0,180) — use fixed white
+       like the timestamps above rather than t->text which is dark on light themes. */
     draw_text(r, font, name, name_x, text_y, win_w - sc(16, win_w),
-              t->text.r, t->text.g, t->text.b);
+              0xff, 0xff, 0xff);
 
     /* Pause icon — centred in the area above the OSD bar */
     if (p->state == PLAYER_PAUSED) {
@@ -675,11 +757,17 @@ void player_draw(SDL_Renderer *r, TTF_Font *font, TTF_Font *font_small,
     int show_osd = p->osd_visible || (p->state == PLAYER_PAUSED);
 
     if (p->video_tex && p->probe.video_stream_idx >= 0) {
-        /* Video — render according to zoom mode */
+        /* Video — render according to zoom mode.
+           On A30 with portrait_direct, the frame is blitted directly from the
+           portrait buffer to fb0 by a30_flip_video(); skip SDL_RenderCopy so
+           the SDL surface retains a black video area for OSD compositing. */
+#ifdef GVU_A30
+        if (!p->video.portrait_direct)
+#endif
         {
             static const float zoom_t[] = { 0.0f, 0.5f, 1.0f }; /* FIT, WIDE, FILL */
             SDL_Rect src, dst;
-            video_zoom_rects(p->video.native_w, p->video.native_h,
+            video_zoom_rects(p->video.tex_w, p->video.tex_h,
                              win_w, win_h, zoom_t[p->zoom_mode], &src, &dst);
             SDL_RenderCopy(r, p->video_tex, &src, &dst);
         }

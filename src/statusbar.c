@@ -118,6 +118,46 @@ static void update_wifi(void) {
  * Drawing
  * ---------------------------------------------------------------------- */
 
+/* Cached text texture — rebuilt only when text or colour changes. */
+typedef struct {
+    SDL_Texture *tex;
+    int          w, h;
+    char         text[16];
+    Uint8        cr, cg, cb;
+} TextCache;
+
+static TextCache s_clock_cache = {0};
+static TextCache s_title_cache = {0};
+static TextCache s_batt_cache  = {0};
+
+static SDL_Texture *get_text_tex(SDL_Renderer *r, TTF_Font *font,
+                                  const char *text, Uint8 R, Uint8 G, Uint8 B,
+                                  TextCache *c) {
+    if (c->tex && c->cr == R && c->cg == G && c->cb == B &&
+            strncmp(c->text, text, sizeof(c->text)) == 0)
+        return c->tex;
+    if (c->tex) SDL_DestroyTexture(c->tex);
+    SDL_Color col = {R, G, B, 0xff};
+    SDL_Surface *s = TTF_RenderUTF8_Blended(font, text, col);
+    if (!s) { c->tex = NULL; return NULL; }
+    c->tex = SDL_CreateTextureFromSurface(r, s);
+    c->w = s->w; c->h = s->h;
+    SDL_FreeSurface(s);
+    strncpy(c->text, text, sizeof(c->text) - 1);
+    c->text[sizeof(c->text) - 1] = '\0';
+    c->cr = R; c->cg = G; c->cb = B;
+    return c->tex;
+}
+
+static void draw_cached_text(SDL_Renderer *r, TTF_Font *font,
+                              const char *text, int x, int y_center,
+                              Uint8 R, Uint8 G, Uint8 B, TextCache *cache) {
+    SDL_Texture *tex = get_text_tex(r, font, text, R, G, B, cache);
+    if (!tex) return;
+    SDL_Rect dst = {x, y_center - cache->h / 2, cache->w, cache->h};
+    SDL_RenderCopy(r, tex, NULL, &dst);
+}
+
 /* Render a single line of text, left-aligned at (x, y_center). */
 static void draw_text_centered_y(SDL_Renderer *r, TTF_Font *font,
                                   const char *text, int x, int y_center,
@@ -262,7 +302,8 @@ void statusbar_draw(SDL_Renderer *renderer, TTF_Font *font,
     struct tm *tm = localtime(&t);
     char clock_buf[8];
     strftime(clock_buf, sizeof(clock_buf), "%H:%M", tm);
-    draw_text_centered_y(renderer, font, clock_buf, pad, mid_y, fr, fg, fb);
+    draw_cached_text(renderer, font, clock_buf, pad, mid_y, fr, fg, fb,
+                     &s_clock_cache);
 
     /* ---- Right: wifi bars + battery ---- */
     int x = win_w - pad;
@@ -277,9 +318,15 @@ void statusbar_draw(SDL_Renderer *renderer, TTF_Font *font,
     if (s_battery_pct >= 0) {
         char pct_buf[8];
         snprintf(pct_buf, sizeof(pct_buf), "%d%%", s_battery_pct);
-        int pw = text_width(font, pct_buf);
+        SDL_Texture *ptex = get_text_tex(renderer, font, pct_buf, fr, fg, fb,
+                                         &s_batt_cache);
+        int pw = ptex ? s_batt_cache.w : text_width(font, pct_buf);
         x -= pw + sc(4, win_w);
-        draw_text_centered_y(renderer, font, pct_buf, x, mid_y, fr, fg, fb);
+        if (ptex) {
+            SDL_Rect dst = {x, mid_y - s_batt_cache.h / 2,
+                            s_batt_cache.w, s_batt_cache.h};
+            SDL_RenderCopy(renderer, ptex, NULL, &dst);
+        }
     }
 
     /* Wifi bars — hidden when wifi is off (s_wifi_link < 0 after a poll cycle) */
@@ -290,7 +337,12 @@ void statusbar_draw(SDL_Renderer *renderer, TTF_Font *font,
     }
 
     /* ---- Center: "GVU" ---- */
-    int title_w = text_width(font, "GVU");
-    draw_text_centered_y(renderer, font, "GVU",
-                          (win_w - title_w) / 2, mid_y, fr, fg, fb);
+    SDL_Texture *ttex = get_text_tex(renderer, font, "GVU", fr, fg, fb,
+                                      &s_title_cache);
+    int title_w = ttex ? s_title_cache.w : text_width(font, "GVU");
+    if (ttex) {
+        SDL_Rect dst = {(win_w - title_w) / 2, mid_y - s_title_cache.h / 2,
+                        title_w, s_title_cache.h};
+        SDL_RenderCopy(renderer, ttex, NULL, &dst);
+    }
 }

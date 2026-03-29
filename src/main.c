@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <time.h>
 #include <signal.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -266,7 +267,7 @@ static int do_play(Player *player, const char *path, SDL_Renderer *renderer,
 
 int main(int argc, char *argv[]) {
 #ifdef GVU_A30
-    int win_w = 640, win_h = 480;  /* A30 panel is always 640×480 */
+    int win_w = 640, win_h = 480;  /* A30 panel: landscape 640×480 */
     (void)argc; (void)argv;
 #else
     /* Optional: ./gvu [width height]  — for testing other device resolutions.
@@ -309,23 +310,6 @@ int main(int argc, char *argv[]) {
         IMG_Quit(); TTF_Quit(); SDL_Quit(); return 1;
     }
 
-    /* Max out the ALSA digital volume at startup so GVU's software volume
-       scale (0–100%) covers the full hardware range from the start.
-       SpruceOS may leave the DAC below maximum, causing the indicator to
-       read 100% while the actual output is quieter than expected. */
-    {
-        static char *vol_argv[] = {
-            "sh", "-c",
-            "amixer sset 'digital volume' 63 >/dev/null 2>&1",
-            NULL
-        };
-        static char *vol_env[] = {
-            "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-            NULL
-        };
-        pid_t vol_pid;
-        posix_spawn(&vol_pid, "/bin/sh", NULL, NULL, vol_argv, vol_env);
-    }
     SDL_Surface *a30_surf = SDL_CreateRGBSurface(0, win_w, win_h, 32,
                                 0x00FF0000u, 0x0000FF00u,
                                 0x000000FFu, 0xFF000000u);
@@ -334,6 +318,13 @@ int main(int argc, char *argv[]) {
         a30_screen_close(); IMG_Quit(); TTF_Quit(); SDL_Quit(); return 1;
     }
     renderer = SDL_CreateSoftwareRenderer(a30_surf);
+    /* Pre-rotated portrait OSD buffer: avoids strided SDL surface reads in
+       the composite path.  Refreshed at most once every OSD_REFRESH_FRAMES. */
+    Uint32 *osd_portrait_buf = (Uint32 *)malloc(A30_PORTRAIT_BUF_PIXELS * sizeof(Uint32));
+    int osd_frame_cnt = 0;
+    int osd_rot_frame = -(1 << 20);  /* force rotation on first has_ui frame */
+    int osd_had_ui    = 0;
+#define OSD_REFRESH_FRAMES 4
 #else
     win = SDL_CreateWindow("GVU",
         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
@@ -366,7 +357,7 @@ int main(int argc, char *argv[]) {
     /* Write icon.png so the SpruceOS launcher shows the current theme's cover art.
        Done at every launch so a fresh install, or a theme change made on a
        previous run, is always reflected in the app list. */
-    theme_save_icon("resources/default_cover.svg", "icon.png");
+    theme_save_app_icon("resources/app_icon.svg", "icon.png");
 #endif
 
     SDL_Texture *default_cover = theme_render_cover(renderer,
@@ -455,8 +446,8 @@ int main(int argc, char *argv[]) {
     Uint32 wake_diag_last   = 0;
 #endif
 
-    int      running  = 1;
-    Uint32   frame_ms = 1000 / FPS_CAP;
+    int      running      = 1;
+    long     frame_ns     = 1000000000L / FPS_CAP; /* nanoseconds per frame */
 
     while (running) {
         /* Honor SIGTERM / SIGINT */
@@ -469,7 +460,9 @@ int main(int argc, char *argv[]) {
             break;
         }
 
-        Uint32 frame_start = SDL_GetTicks();
+        Uint32 frame_start = SDL_GetTicks(); /* ms — used for wake detection */
+        struct timespec ts_frame_start;
+        clock_gettime(CLOCK_MONOTONIC, &ts_frame_start);
 
 #ifdef GVU_A30
         /* Primary sleep/wake detection: large gap in frame timestamps.
@@ -484,6 +477,7 @@ int main(int argc, char *argv[]) {
                 fprintf(stderr, "audio_wake: seek target=%.3f\n", wake_seek_pos);
                 audio_wake(&player.audio);
                 a30_screen_wake();
+                player_set_volume(&player, player.volume); /* re-sync Soft Volume Master after wake */
                 player_seek_to(&player, wake_seek_pos);
                 SDL_Delay(600);
                 {
@@ -812,7 +806,7 @@ int main(int argc, char *argv[]) {
                         default_cover = IMG_LoadTexture(renderer,
                                                         "resources/default_cover.png");
 #ifdef GVU_A30
-                    theme_save_icon("resources/default_cover.svg", "icon.png");
+                    theme_save_app_icon("resources/app_icon.svg", "icon.png");
 #endif
                     state.action = BROWSER_ACTION_NONE;
                 } else if (state.action == BROWSER_ACTION_PLAY) {
@@ -1577,11 +1571,53 @@ int main(int argc, char *argv[]) {
 
         SDL_RenderPresent(renderer);
 #ifdef GVU_A30
-        a30_flip(a30_surf);
+        if (mode == MODE_PLAYBACK
+                && player.video.portrait_direct
+                && player.a30_portrait_frame) {
+            /* Portrait-direct: blit the portrait buffer to fb0 directly.
+             * Pre-rotate the SDL OSD surface to portrait format and composite
+             * sequentially — avoids strided SDL surface reads in the flip path. */
+            int has_ui = player.osd_visible
+                      || player.vol_osd_visible
+                      || player.bri_osd_visible
+                      || player.zoom_osd_visible
+                      || player.audio_osd_visible
+                      || player.sub_osd_visible
+                      || player.wake_osd_visible
+                      || player.state == PLAYER_PAUSED
+                      || player.subtitle.count > 0
+                      || player.brightness < 0.999f;
+            osd_frame_cnt++;
+            const Uint32 *osd_ptr = NULL;
+            if (has_ui && osd_portrait_buf) {
+                /* Re-rotate if: first has_ui frame after a clean stretch,
+                   or the refresh interval has elapsed (OSD animates). */
+                if (!osd_had_ui ||
+                        osd_frame_cnt - osd_rot_frame >= OSD_REFRESH_FRAMES) {
+                    a30_surface_to_portrait(a30_surf, osd_portrait_buf);
+                    osd_rot_frame = osd_frame_cnt;
+                }
+                osd_ptr = osd_portrait_buf;
+            }
+            osd_had_ui = has_ui;
+            static const float zoom_t[] = { 0.0f, 0.5f, 1.0f };
+            a30_flip_video(osd_ptr,
+                           (const Uint32 *)player.a30_portrait_frame->data[0],
+                           player.a30_portrait_frame->width,
+                           zoom_t[player.zoom_mode]);
+        } else {
+            a30_flip(a30_surf);
+        }
 #endif
 
-        Uint32 elapsed = SDL_GetTicks() - frame_start;
-        if (elapsed < frame_ms) SDL_Delay(frame_ms - elapsed);
+        struct timespec ts_now;
+        clock_gettime(CLOCK_MONOTONIC, &ts_now);
+        long elapsed_ns = (ts_now.tv_sec  - ts_frame_start.tv_sec)  * 1000000000L
+                        + (ts_now.tv_nsec - ts_frame_start.tv_nsec);
+        if (elapsed_ns < frame_ns) {
+            struct timespec sleep_ts = { 0, frame_ns - elapsed_ns };
+            nanosleep(&sleep_ts, NULL);
+        }
     }
 
     /* Cleanup */
@@ -1603,6 +1639,7 @@ cleanup:
     if (font)       TTF_CloseFont(font);
     if (renderer)   SDL_DestroyRenderer(renderer);
 #ifdef GVU_A30
+    free(osd_portrait_buf);
     if (a30_surf)   SDL_FreeSurface(a30_surf);
     a30_screen_close();
 #else

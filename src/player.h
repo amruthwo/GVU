@@ -69,6 +69,13 @@ typedef struct {
     /* Sleep/wake resume toast */
     int          wake_osd_visible;
     Uint32       wake_osd_hide_at;
+
+#ifdef GVU_A30
+    /* Portrait-direct path: latest portrait-format BGRA frame from the sws
+       thread.  Set in player_update() when video.portrait_direct is active.
+       Used by a30_flip_video() in place of the SDL texture path. */
+    AVFrame     *a30_portrait_frame;
+#endif
 } Player;
 
 /* Open file, initialise demux + audio + video. Does not start playback. */

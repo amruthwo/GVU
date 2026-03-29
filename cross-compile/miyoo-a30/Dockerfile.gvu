@@ -127,6 +127,8 @@ RUN wget -q https://ffmpeg.org/releases/ffmpeg-5.1.6.tar.gz && \
         --arch=arm --target-os=linux \
         --cross-prefix=$CROSS- \
         --enable-cross-compile \
+        --cpu=cortex-a7 \
+        --enable-runtime-cpudetect \
         --prefix=$PREFIX \
         --enable-static --disable-shared \
         --disable-programs --disable-doc \

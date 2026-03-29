@@ -52,6 +52,8 @@ fi
 # Resources
 cp -v "$REPO_ROOT/resources/fonts/DejaVuSans.ttf"  "$APP/resources/fonts/"
 cp -v "$REPO_ROOT/resources/default_cover.png"      "$APP/resources/"
+cp -v "$REPO_ROOT/resources/default_cover.svg"      "$APP/resources/"
+cp -v "$REPO_ROOT/resources/app_icon.svg"           "$APP/resources/"
 cp -v "$REPO_ROOT/resources/scrape_covers.sh"           "$APP/resources/"
 cp -v "$REPO_ROOT/resources/clear_covers.sh"            "$APP/resources/"
 cp -v "$REPO_ROOT/resources/fetch_subtitles.py"         "$APP/resources/"
