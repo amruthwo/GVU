@@ -17,12 +17,17 @@ typedef struct {
     RGB highlight_bg;
     RGB highlight_text;
     RGB statusbar_fg;   /* text and icon color for the status bar */
-    /* Cover icon colors (SVG recoloring, independent of UI colors) */
+    /* Cover icon colors (SVG recoloring for default_cover, independent of UI colors) */
     RGB cover_body;
     RGB cover_tab;
     RGB cover_shadow;
     RGB cover_screen;
     RGB cover_play;
+    /* App icon colors (SVG recoloring for app_icon.svg — per-theme mapping) */
+    RGB icon_ring;    /* outer ring outline */
+    RGB icon_circle;  /* center circle fill */
+    RGB icon_outer;   /* left and right arrows */
+    RGB icon_center;  /* center arrow */
 } Theme;
 
 /* All built-in themes (NULL-terminated) */
@@ -90,3 +95,8 @@ SDL_Texture *theme_render_cover(SDL_Renderer *renderer, const char *svg_path);
    active theme. Call at startup and after every theme_cycle().
    Returns 0 on success, -1 on error. */
 int theme_save_icon(const char *svg_path, const char *png_path);
+
+/* Rasterize app_icon.svg with the current theme's icon_* colors and save as PNG.
+   Uses a separate per-theme color mapping from theme_save_icon (which uses the
+   cover colors).  Call at startup and after every theme_cycle(). */
+int theme_save_app_icon(const char *svg_path, const char *png_path);

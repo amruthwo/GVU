@@ -366,21 +366,8 @@ static int video_sws_thread(void *userdata) {
             cvt->format = AV_PIX_FMT_BGRA;
             av_frame_get_buffer(cvt, 32);
 
-            struct timespec _vs0, _vs1, _vd0, _vd1;
-            clock_gettime(CLOCK_MONOTONIC, &_vs0);
             yuv420p_to_portrait_bgra_2x(rf.frame, cvt);
-            clock_gettime(CLOCK_MONOTONIC, &_vs1);
-            clock_gettime(CLOCK_MONOTONIC, &_vd0);
             fq_push(&v->frame_queue, cvt, rf.pts, &v->abort);
-            clock_gettime(CLOCK_MONOTONIC, &_vd1);
-            static int _vn_p = 0;
-            if (++_vn_p % 60 == 0) {
-#define _US(a,b) (((b).tv_sec-(a).tv_sec)*1000000L+((b).tv_nsec-(a).tv_nsec)/1000L)
-                fprintf(stderr, "VIDEO portrait=%ldus wait=%ldus src=%dx%d\n",
-                        _US(_vs0,_vs1), _US(_vd0,_vd1),
-                        rf.frame->width, rf.frame->height);
-#undef _US
-            }
             av_frame_unref(cvt);
             av_frame_free(&rf.frame);
             continue;
@@ -394,24 +381,11 @@ static int video_sws_thread(void *userdata) {
             cvt->format = AV_PIX_FMT_BGRA;
             av_frame_get_buffer(cvt, 32);
 
-            struct timespec _vs0, _vs1, _vd0, _vd1;
-            clock_gettime(CLOCK_MONOTONIC, &_vs0);
             sws_scale(sws,
                       (const uint8_t * const *)rf.frame->data, rf.frame->linesize,
                       0, rf.frame->height,
                       cvt->data, cvt->linesize);
-            clock_gettime(CLOCK_MONOTONIC, &_vs1);
-            clock_gettime(CLOCK_MONOTONIC, &_vd0);
             fq_push(&v->frame_queue, cvt, rf.pts, &v->abort);
-            clock_gettime(CLOCK_MONOTONIC, &_vd1);
-            static int _vn = 0;
-            if (++_vn % 60 == 0) {
-#define _US(a,b) (((b).tv_sec-(a).tv_sec)*1000000L+((b).tv_nsec-(a).tv_nsec)/1000L)
-                fprintf(stderr, "VIDEO sws=%ldus wait=%ldus src=%dx%d dst=%dx%d\n",
-                        _US(_vs0,_vs1), _US(_vd0,_vd1),
-                        rf.frame->width, rf.frame->height, v->tex_w, v->tex_h);
-#undef _US
-            }
             av_frame_unref(cvt);
         } else {
             /* No sws context — push raw frame directly */

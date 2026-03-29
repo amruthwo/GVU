@@ -32,21 +32,32 @@ void a30_poll_events(void);
 /* Release resources (munmap, close fds).  Call on shutdown. */
 void a30_screen_close(void);
 
+/* Size of the pre-rotated portrait OSD buffer in pixels (480×640).
+   Allocate A30_PORTRAIT_BUF_PIXELS * sizeof(Uint32) bytes for this buffer. */
+#define A30_PORTRAIT_BUF_PIXELS  (480 * 640)
+
+/* Pre-rotate an SDL landscape surface (640×480, ARGB8888) into a portrait
+   BGRA buffer (480×640) using the same 90°CCW transform as a30_flip().
+   out_portrait must point to at least A30_PORTRAIT_BUF_PIXELS * sizeof(Uint32)
+   bytes.  Call this once per OSD-dirty frame, then pass the buffer to
+   a30_flip_video() so that composite reads are sequential (not strided). */
+void a30_surface_to_portrait(SDL_Surface *surf, Uint32 *out_portrait);
+
 /* Portrait-direct blit: write a portrait-format BGRA buffer (produced by the
    sws thread's yuv420p_to_portrait_bgra_2x kernel) directly to fb0.
    Eliminates the strided 90°CCW rotation of a30_flip() for the video pixels.
 
+   osd_portrait:  pre-rotated portrait OSD buffer (from a30_surface_to_portrait),
+                  or NULL for the fast path (pure sequential blit, no OSD).
    portrait_bgra: BGRA buffer, port_w × PANEL_H pixels (row-major, row=panel row)
    port_w:        portrait buffer width in pixels (e.g. 360 for 720p FIT)
    zoom_t:        zoom interpolation: 0.0=FIT (black bars), 0.5=WIDE, 1.0=FILL (no bars)
-   has_ui:        0 = fast path (pure sequential blit + black letterboxes);
-                  1 = composite path (overlay non-black SDL surface pixels for OSD)
 
-   When has_ui=0 and zoom_t=0 the SDL surface is not accessed at all (~3ms).
-   When has_ui=1 the SDL surface is composited on top. */
-void a30_flip_video(SDL_Surface *ui_surf,
+   When osd_portrait=NULL and zoom_t=0 the SDL surface is not accessed (~3ms).
+   When osd_portrait!=NULL OSD pixels are composited using sequential reads (~2ms). */
+void a30_flip_video(const Uint32 *osd_portrait,
                     const Uint32 *portrait_bgra,
-                    int port_w, float zoom_t, int has_ui);
+                    int port_w, float zoom_t);
 
 /* Call immediately after sleep/wake is detected.
    Permanently disables FBIOPAN_DISPLAY for the rest of the session —

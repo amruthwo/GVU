@@ -318,6 +318,13 @@ int main(int argc, char *argv[]) {
         a30_screen_close(); IMG_Quit(); TTF_Quit(); SDL_Quit(); return 1;
     }
     renderer = SDL_CreateSoftwareRenderer(a30_surf);
+    /* Pre-rotated portrait OSD buffer: avoids strided SDL surface reads in
+       the composite path.  Refreshed at most once every OSD_REFRESH_FRAMES. */
+    Uint32 *osd_portrait_buf = (Uint32 *)malloc(A30_PORTRAIT_BUF_PIXELS * sizeof(Uint32));
+    int osd_frame_cnt = 0;
+    int osd_rot_frame = -(1 << 20);  /* force rotation on first has_ui frame */
+    int osd_had_ui    = 0;
+#define OSD_REFRESH_FRAMES 4
 #else
     win = SDL_CreateWindow("GVU",
         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
@@ -350,7 +357,7 @@ int main(int argc, char *argv[]) {
     /* Write icon.png so the SpruceOS launcher shows the current theme's cover art.
        Done at every launch so a fresh install, or a theme change made on a
        previous run, is always reflected in the app list. */
-    theme_save_icon("resources/default_cover.svg", "icon.png");
+    theme_save_app_icon("resources/app_icon.svg", "icon.png");
 #endif
 
     SDL_Texture *default_cover = theme_render_cover(renderer,
@@ -799,7 +806,7 @@ int main(int argc, char *argv[]) {
                         default_cover = IMG_LoadTexture(renderer,
                                                         "resources/default_cover.png");
 #ifdef GVU_A30
-                    theme_save_icon("resources/default_cover.svg", "icon.png");
+                    theme_save_app_icon("resources/app_icon.svg", "icon.png");
 #endif
                     state.action = BROWSER_ACTION_NONE;
                 } else if (state.action == BROWSER_ACTION_PLAY) {
@@ -1564,44 +1571,42 @@ int main(int argc, char *argv[]) {
 
         SDL_RenderPresent(renderer);
 #ifdef GVU_A30
-        {
-            struct timespec _f0, _f1;
-            clock_gettime(CLOCK_MONOTONIC, &_f0);
-            if (mode == MODE_PLAYBACK
-                    && player.video.portrait_direct
-                    && player.a30_portrait_frame) {
-                /* Portrait-direct: blit the portrait buffer to fb0 directly.
-                 * has_ui=1 when anything is drawn on the SDL surface (OSD,
-                 * subtitles, dimming) so the composite path handles overlay.
-                 * has_ui=0 is the fast pure-blit path with no strided reads. */
-                int has_ui = player.osd_visible
-                          || player.vol_osd_visible
-                          || player.bri_osd_visible
-                          || player.zoom_osd_visible
-                          || player.audio_osd_visible
-                          || player.sub_osd_visible
-                          || player.wake_osd_visible
-                          || player.state == PLAYER_PAUSED
-                          || player.subtitle.count > 0
-                          || player.brightness < 0.999f;
-                static const float zoom_t[] = { 0.0f, 0.5f, 1.0f };
-                a30_flip_video(a30_surf,
-                               (const Uint32 *)player.a30_portrait_frame->data[0],
-                               player.a30_portrait_frame->width,
-                               zoom_t[player.zoom_mode],
-                               has_ui);
-            } else {
-                a30_flip(a30_surf);
-            }
-            clock_gettime(CLOCK_MONOTONIC, &_f1);
-            if (mode == MODE_PLAYBACK) {
-                static int _fn = 0;
-                if (++_fn % 60 == 0) {
-#define _US(a,b) (((b).tv_sec-(a).tv_sec)*1000000L+((b).tv_nsec-(a).tv_nsec)/1000L)
-                    fprintf(stderr, "FLIP %ldus\n", _US(_f0,_f1));
-#undef _US
+        if (mode == MODE_PLAYBACK
+                && player.video.portrait_direct
+                && player.a30_portrait_frame) {
+            /* Portrait-direct: blit the portrait buffer to fb0 directly.
+             * Pre-rotate the SDL OSD surface to portrait format and composite
+             * sequentially — avoids strided SDL surface reads in the flip path. */
+            int has_ui = player.osd_visible
+                      || player.vol_osd_visible
+                      || player.bri_osd_visible
+                      || player.zoom_osd_visible
+                      || player.audio_osd_visible
+                      || player.sub_osd_visible
+                      || player.wake_osd_visible
+                      || player.state == PLAYER_PAUSED
+                      || player.subtitle.count > 0
+                      || player.brightness < 0.999f;
+            osd_frame_cnt++;
+            const Uint32 *osd_ptr = NULL;
+            if (has_ui && osd_portrait_buf) {
+                /* Re-rotate if: first has_ui frame after a clean stretch,
+                   or the refresh interval has elapsed (OSD animates). */
+                if (!osd_had_ui ||
+                        osd_frame_cnt - osd_rot_frame >= OSD_REFRESH_FRAMES) {
+                    a30_surface_to_portrait(a30_surf, osd_portrait_buf);
+                    osd_rot_frame = osd_frame_cnt;
                 }
+                osd_ptr = osd_portrait_buf;
             }
+            osd_had_ui = has_ui;
+            static const float zoom_t[] = { 0.0f, 0.5f, 1.0f };
+            a30_flip_video(osd_ptr,
+                           (const Uint32 *)player.a30_portrait_frame->data[0],
+                           player.a30_portrait_frame->width,
+                           zoom_t[player.zoom_mode]);
+        } else {
+            a30_flip(a30_surf);
         }
 #endif
 
@@ -1634,6 +1639,7 @@ cleanup:
     if (font)       TTF_CloseFont(font);
     if (renderer)   SDL_DestroyRenderer(renderer);
 #ifdef GVU_A30
+    free(osd_portrait_buf);
     if (a30_surf)   SDL_FreeSurface(a30_surf);
     a30_screen_close();
 #else
