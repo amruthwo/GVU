@@ -437,7 +437,7 @@ void audio_wake(AudioCtx *a) {
     {
         static char *child_argv[] = {
             "sh", "-c",
-            "amixer sset 'digital volume' 63 >/dev/null 2>&1",
+            "amixer sset 'Soft Volume Master' 255 >/dev/null 2>&1",
             NULL
         };
         static char *child_env[] = {

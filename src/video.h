@@ -60,6 +60,11 @@ typedef struct {
     PacketQueue       *pkt_queue;     /* borrowed from DemuxCtx */
     AVRational         time_base;
     int                abort;
+    /* A30 only: 1 when source is exactly 2× the fit-rect size and the custom
+       portrait kernel (YUV→BGRA + rotate + 2× downscale) can be used instead
+       of libswscale.  Frames in frame_queue are then portrait-oriented BGRA
+       with width=tex_h and height=tex_w, bypassing the SDL texture path. */
+    int                portrait_direct;
 } VideoCtx;
 
 int  video_open (VideoCtx *v, AVCodecParameters *cp, AVRational time_base,

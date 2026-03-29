@@ -173,20 +173,26 @@ void a30_flip(SDL_Surface *surface) {
         const int src_x = GVU_W - 1 - r;   /* src column for this dst row */
         Uint32 *out = dst + (size_t)r * (size_t)s_fb_stride;
 #ifdef __ARM_NEON__
-        /* Process 4 pixels at a time: 4 scalar loads + 1 NEON 16-byte store.
-         * The wider store reduces write transactions to the uncached framebuffer. */
+        /* Process 8 pixels at a time: 8 scalar loads + 2 NEON 16-byte stores.
+         * Two back-to-back vst1q_u32 fill one 32-byte AXI burst — matching the
+         * bus width of the Cortex-A7 memory interconnect for maximum throughput
+         * to the uncached framebuffer.
+         * Prefetch the next 8 source rows ahead to hide strided-load latency.
+         * PANEL_W=480 is divisible by 8 so no tail loop is needed. */
         const uint32x4_t alpha_v = vdupq_n_u32(0xFF000000u);
-        unsigned int c = 0;
-        for (; c + 4 <= (unsigned)PANEL_W; c += 4) {
-            uint32_t tmp[4];
+        for (unsigned int c = 0; c < (unsigned)PANEL_W; c += 8) {
+            __builtin_prefetch(&src[(c+8) * pitch + src_x], 0, 0);
+            uint32_t tmp[8];
             tmp[0] = src[(c+0) * pitch + src_x];
             tmp[1] = src[(c+1) * pitch + src_x];
             tmp[2] = src[(c+2) * pitch + src_x];
             tmp[3] = src[(c+3) * pitch + src_x];
-            vst1q_u32(out + c, vorrq_u32(vld1q_u32(tmp), alpha_v));
-        }
-        for (; c < (unsigned)PANEL_W; c++) {
-            out[c] = src[(size_t)c * (size_t)pitch + (size_t)src_x] | 0xFF000000u;
+            tmp[4] = src[(c+4) * pitch + src_x];
+            tmp[5] = src[(c+5) * pitch + src_x];
+            tmp[6] = src[(c+6) * pitch + src_x];
+            tmp[7] = src[(c+7) * pitch + src_x];
+            vst1q_u32(out + c,     vorrq_u32(vld1q_u32(tmp),   alpha_v));
+            vst1q_u32(out + c + 4, vorrq_u32(vld1q_u32(tmp+4), alpha_v));
         }
 #else
         for (int c = 0; c < PANEL_W; c++) {
@@ -209,6 +215,120 @@ void a30_flip(SDL_Surface *surface) {
         }
     }
     /* Post-wake: already wrote directly to front page; nothing more to do. */
+}
+
+/* -------------------------------------------------------------------------
+ * a30_flip_video — portrait-direct blit for video frames
+ *
+ * The sws thread's yuv420p_to_portrait_bgra_2x() kernel produces a
+ * portrait-format BGRA buffer (width=port_w, height=PANEL_H).  Each buffer
+ * row corresponds directly to one panel row, so writing it to the fb is a
+ * simple sequential blit with no rotation.
+ *
+ * has_ui=0: pure sequential portrait blit + black letterboxes (~3ms).
+ * has_ui=1: single-pass composite — each fb row written exactly once in order,
+ *           interleaving portrait video and non-black SDL OSD pixels.
+ *           Strided SDL reads benefit from L1 cache after the first row, so
+ *           this path is only marginally slower than the fast path.
+ *           Using a single pass avoids the tearing artifact that a two-pass
+ *           approach causes: if pass 2 wrote scattered OSD pixels after the
+ *           display had already scanned part of the frame, a diagonal black
+ *           triangle would appear where the scan beat the second pass.
+ * ---------------------------------------------------------------------- */
+
+void a30_flip_video(SDL_Surface *ui_surf,
+                    const Uint32 *portrait_bgra,
+                    int port_w, float zoom_t, int has_ui) {
+    if (!s_fb_mem || !portrait_bgra) return;
+
+    /* Zoom geometry (uniform scale, aspect preserved):
+     *   display_w  — panel columns used by video (port_w at FIT, PANEL_W at FILL)
+     *   col_off    — black columns on each side
+     *   src_rows   — portrait buffer rows used (crops top/bottom symmetrically)
+     *   row_off    — first source row (centres the vertical crop)
+     * At zoom_t=0 all values reduce to the 1:1 FIT case. */
+    int display_w = port_w + (int)((PANEL_W - port_w) * zoom_t + 0.5f);
+    if (display_w > PANEL_W) display_w = PANEL_W;
+    int col_off  = (PANEL_W - display_w) / 2;
+    int src_rows = PANEL_H * port_w / display_w;
+    if (src_rows > PANEL_H) src_rows = PANEL_H;
+    int row_off  = (PANEL_H - src_rows) / 2;
+
+    int dst_yoff = s_fb_yoffset;
+    Uint32 *fb   = s_fb_mem + (size_t)dst_yoff * (size_t)s_fb_stride;
+
+    /* FIT fast path (zoom_t≈0): memcpy each row, no scale arithmetic. */
+    if (zoom_t < 0.001f) {
+        if (!has_ui) {
+            for (int r = 0; r < PANEL_H; r++) {
+                Uint32 *out = fb + (size_t)r * (size_t)s_fb_stride;
+                for (int c = 0; c < col_off; c++)
+                    out[c] = 0xFF000000u;
+                memcpy(out + col_off,
+                       portrait_bgra + (size_t)r * (size_t)port_w,
+                       (size_t)port_w * sizeof(Uint32));
+                for (int c = col_off + port_w; c < PANEL_W; c++)
+                    out[c] = 0xFF000000u;
+            }
+            return;
+        }
+        /* FIT + OSD composite */
+        if (!ui_surf) return;
+        SDL_LockSurface(ui_surf);
+        const Uint32 *sdl   = (const Uint32 *)ui_surf->pixels;
+        const int     pitch = ui_surf->pitch / 4;
+        for (int r = 0; r < PANEL_H; r++) {
+            const int src_x = GVU_W - 1 - r;
+            Uint32 *out = fb + (size_t)r * (size_t)s_fb_stride;
+            const Uint32 *port_row = portrait_bgra + (size_t)r * (size_t)port_w;
+            for (int c = 0; c < col_off; c++) {
+                Uint32 ui = sdl[c * pitch + src_x] | 0xFF000000u;
+                out[c] = (ui & 0x00FFFFFFu) ? ui : 0xFF000000u;
+            }
+            for (int c = col_off; c < col_off + port_w; c++) {
+                Uint32 ui = sdl[c * pitch + src_x] | 0xFF000000u;
+                out[c] = (ui & 0x00FFFFFFu) ? ui : port_row[c - col_off];
+            }
+            for (int c = col_off + port_w; c < PANEL_W; c++) {
+                Uint32 ui = sdl[c * pitch + src_x] | 0xFF000000u;
+                out[c] = (ui & 0x00FFFFFFu) ? ui : 0xFF000000u;
+            }
+        }
+        SDL_UnlockSurface(ui_surf);
+        return;
+    }
+
+    /* Zoom path (WIDE/FILL): nearest-neighbour scale from portrait buffer.
+     * src_row / src_col map panel coordinates into the portrait buffer.
+     * OSD pixels (SDL surface) are independent of zoom — the OSD is a
+     * full-panel overlay composited over whatever video pixel is underneath. */
+    if (has_ui) {
+        if (!ui_surf) return;
+        SDL_LockSurface(ui_surf);
+    }
+    const Uint32 *sdl = has_ui ? (const Uint32 *)ui_surf->pixels : NULL;
+    const int pitch   = has_ui ? (ui_surf->pitch / 4) : 0;
+
+    for (int r = 0; r < PANEL_H; r++) {
+        int src_row = row_off + r * src_rows / PANEL_H;
+        const Uint32 *port_row = portrait_bgra + (size_t)src_row * (size_t)port_w;
+        const int src_x = GVU_W - 1 - r;
+        Uint32 *out = fb + (size_t)r * (size_t)s_fb_stride;
+
+        for (int c = 0; c < PANEL_W; c++) {
+            Uint32 ui = has_ui ? (sdl[c * pitch + src_x] | 0xFF000000u) : 0u;
+            if (has_ui && (ui & 0x00FFFFFFu)) {
+                out[c] = ui;
+            } else if (c < col_off || c >= col_off + display_w) {
+                out[c] = 0xFF000000u;
+            } else {
+                out[c] = port_row[(c - col_off) * port_w / display_w];
+            }
+        }
+    }
+
+    if (has_ui)
+        SDL_UnlockSurface(ui_surf);
 }
 
 void a30_screen_wake(void) {

@@ -918,6 +918,15 @@ static void draw_hint_bar(SDL_Renderer *renderer, TTF_Font *font,
         { "Y",   "Fetch Art" },
         { "R1",  "Theme"     },
     };
+    /* Showcase: swap SEL/X for a ← → navigation hint so it's obvious
+       the D-pad left/right navigates the carousel. */
+    static const HintItem showcase_hints[] = {
+        { "\xe2\x86\x90\xe2\x86\x92", "Browse" },
+        { "A",   "Open"      },
+        { "B",   "Exit"      },
+        { "Y",   "Fetch Art" },
+        { "R1",  "Theme"     },
+    };
     static const HintItem season_hints[] = {
         { "A",   "Open"    },
         { "B",   "Back"    },
@@ -934,7 +943,9 @@ static void draw_hint_bar(SDL_Renderer *renderer, TTF_Font *font,
     };
     const HintItem *items;
     int item_count;
-    if (state->view == VIEW_FOLDERS) {
+    if (state->view == VIEW_FOLDERS && state->layout == LAYOUT_SHOWCASE) {
+        items = showcase_hints; item_count = 5;
+    } else if (state->view == VIEW_FOLDERS) {
         items = folder_hints; item_count = 6;
     } else if (state->view == VIEW_SEASONS) {
         items = season_hints; item_count = 4;
@@ -962,8 +973,8 @@ static void draw_showcase(SDL_Renderer *renderer, TTF_Font *font, TTF_Font *font
     int content_h  = win_h - hint_bar_h;
 
     /* Geometry */
-    int peek_w = sc(44, win_w);   /* visible slice of neighbouring cover */
-    int gap    = sc(10, win_w);   /* space between peeking edge and main cover */
+    int peek_w = sc(80, win_w);   /* visible slice of neighbouring cover */
+    int gap    = sc(8,  win_w);   /* space between peeking edge and main cover */
     int cover_w = win_w - 2 * (peek_w + gap);
     int cover_x = (win_w - cover_w) / 2;
     int rad     = sc(16, win_w);
@@ -978,19 +989,35 @@ static void draw_showcase(SDL_Renderer *renderer, TTF_Font *font, TTF_Font *font
     int name_y  = cover_y + cover_h + sc(8, win_h);
     int ctr_y   = name_y + name_h;
 
-    /* Left peek (sel−1) — fill mode so the slice always shows image content */
+    /* Left peek (sel−1): fit-scale to slot height, right-align inside edge.
+       No card background — theme background shows in any gap areas.
+       Same treatment for all cover types (downloaded or default). */
     if (sel > 0) {
-        SDL_Texture *tex = get_cover(renderer, cache, lib, sel - 1, default_cover);
-        int lx = cover_x - gap - cover_w;
-        render_cover_fill(renderer, tex, lx, cover_y, cover_w, cover_h);
+        int pidx = sel - 1;
+        int lx   = cover_x - gap - cover_w;
+        SDL_Texture *tex = get_cover(renderer, cache, lib, pidx, default_cover);
+        int tw2, th2;
+        SDL_QueryTexture(tex, NULL, NULL, &tw2, &th2);
+        float psc = (float)cover_h / th2;
+        if (psc * tw2 > cover_w) psc = (float)cover_w / tw2;
+        int pdw = (int)(tw2 * psc + 0.5f), pdh = (int)(th2 * psc + 0.5f);
+        SDL_Rect dst = { cover_x - gap - pdw, cover_y + (cover_h - pdh) / 2, pdw, pdh };
+        SDL_RenderCopy(renderer, tex, NULL, &dst);
         mask_corners(renderer, lx, cover_y, cover_w, cover_h, rad,
                      t->background.r, t->background.g, t->background.b);
     }
-    /* Right peek (sel+1) — fill mode */
+    /* Right peek (sel+1) — mirror: left-align inside edge */
     if (sel < count - 1) {
-        SDL_Texture *tex = get_cover(renderer, cache, lib, sel + 1, default_cover);
-        int rx = cover_x + cover_w + gap;
-        render_cover_fill(renderer, tex, rx, cover_y, cover_w, cover_h);
+        int pidx = sel + 1;
+        int rx   = cover_x + cover_w + gap;
+        SDL_Texture *tex = get_cover(renderer, cache, lib, pidx, default_cover);
+        int tw2, th2;
+        SDL_QueryTexture(tex, NULL, NULL, &tw2, &th2);
+        float psc = (float)cover_h / th2;
+        if (psc * tw2 > cover_w) psc = (float)cover_w / tw2;
+        int pdw = (int)(tw2 * psc + 0.5f), pdh = (int)(th2 * psc + 0.5f);
+        SDL_Rect dst = { rx, cover_y + (cover_h - pdh) / 2, pdw, pdh };
+        SDL_RenderCopy(renderer, tex, NULL, &dst);
         mask_corners(renderer, rx, cover_y, cover_w, cover_h, rad,
                      t->background.r, t->background.g, t->background.b);
     }

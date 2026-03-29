@@ -271,6 +271,71 @@ static int video_decode_thread(void *userdata) {
 }
 
 /* -------------------------------------------------------------------------
+ * Portrait kernel (A30 only) — YUV420P → BGRA + 90°CCW + 2× downscale
+ * ---------------------------------------------------------------------- */
+
+#ifdef GVU_A30
+/* BT.601 limited-range YUV→BGRA.
+ * Returns little-endian uint32 with B=byte0, G=byte1, R=byte2, A=0xFF=byte3.
+ * That is BGRA memory layout = SDL ARGB8888 pixel value. */
+static inline uint32_t yuv601_to_bgra(int y, int u, int v) {
+    int c = y - 16, d = u - 128, e = v - 128;
+    int r = (298 * c           + 409 * e + 128) >> 8;
+    int g = (298 * c - 100 * d - 208 * e + 128) >> 8;
+    int b = (298 * c + 516 * d           + 128) >> 8;
+    if (r < 0) r = 0; else if (r > 255) r = 255;
+    if (g < 0) g = 0; else if (g > 255) g = 255;
+    if (b < 0) b = 0; else if (b > 255) b = 255;
+    return 0xFF000000u | ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
+}
+
+/* Combine YUV420P→BGRA, 90°CCW rotation, and 2× downscale in one pass.
+ *
+ * src: YUV420P frame (e.g. 1280×720)
+ * dst: BGRA frame with width = src->height/2 and height = src->width/2
+ *      (portrait layout: dst width = number of panel columns covered by video,
+ *       dst height = number of panel rows)
+ *
+ * Portrait mapping (matches a30_flip rotation):
+ *   portrait row pr = (src->width/2 - 1) - (sx/2)
+ *   portrait col pc = sy/2
+ *
+ * Iterates source-row-major (outer sy, inner sx) so Y and UV reads are
+ * nearly sequential.  Portrait writes are strided (stride = dst->width pixels)
+ * but go to heap-cached memory, far cheaper than uncached framebuffer writes.
+ */
+static void yuv420p_to_portrait_bgra_2x(const AVFrame *src, AVFrame *dst) {
+    const int sw          = src->width;
+    const int sh          = src->height;
+    uint32_t *portrait    = (uint32_t *)dst->data[0];
+    const int port_stride = dst->linesize[0] / 4;   /* pixels per portrait row */
+
+    const uint8_t *Y_base = src->data[0];
+    const uint8_t *U_base = src->data[1];
+    const uint8_t *V_base = src->data[2];
+    const int Y_stride    = src->linesize[0];
+    const int U_stride    = src->linesize[1];
+    const int V_stride    = src->linesize[2];
+    const int pr_max      = (sw >> 1) - 1;
+
+    for (int sy = 0; sy < sh; sy += 2) {
+        const int pc         = sy >> 1;
+        const uint8_t *Y0    = Y_base + sy * Y_stride;
+        const uint8_t *Y1    = Y_base + (sy + 1) * Y_stride;
+        const uint8_t *U_row = U_base + (sy >> 1) * U_stride;
+        const uint8_t *V_row = V_base + (sy >> 1) * V_stride;
+
+        for (int sx = 0; sx < sw; sx += 2) {
+            const int pr  = pr_max - (sx >> 1);
+            const int y_v = ((int)Y0[sx] + Y0[sx+1] + Y1[sx] + Y1[sx+1] + 2) >> 2;
+            portrait[(size_t)pr * port_stride + pc] =
+                yuv601_to_bgra(y_v, U_row[sx >> 1], V_row[sx >> 1]);
+        }
+    }
+}
+#endif /* GVU_A30 */
+
+/* -------------------------------------------------------------------------
  * sws thread — pops raw YUV frames, converts to BGRA, pushes to frame_queue
  *
  * Runs in parallel with the decode thread: while the decode thread decodes
@@ -291,6 +356,37 @@ static int video_sws_thread(void *userdata) {
             break;
         }
 
+#ifdef GVU_A30
+        if (v->portrait_direct) {
+            /* Custom kernel: combine YUV→BGRA + rotate + 2× downscale in one
+             * pass instead of separate sws_scale + a30_flip() rotation.
+             * Portrait frame: width = src_h/2, height = src_w/2 */
+            cvt->width  = rf.frame->height / 2;
+            cvt->height = rf.frame->width  / 2;
+            cvt->format = AV_PIX_FMT_BGRA;
+            av_frame_get_buffer(cvt, 32);
+
+            struct timespec _vs0, _vs1, _vd0, _vd1;
+            clock_gettime(CLOCK_MONOTONIC, &_vs0);
+            yuv420p_to_portrait_bgra_2x(rf.frame, cvt);
+            clock_gettime(CLOCK_MONOTONIC, &_vs1);
+            clock_gettime(CLOCK_MONOTONIC, &_vd0);
+            fq_push(&v->frame_queue, cvt, rf.pts, &v->abort);
+            clock_gettime(CLOCK_MONOTONIC, &_vd1);
+            static int _vn_p = 0;
+            if (++_vn_p % 60 == 0) {
+#define _US(a,b) (((b).tv_sec-(a).tv_sec)*1000000L+((b).tv_nsec-(a).tv_nsec)/1000L)
+                fprintf(stderr, "VIDEO portrait=%ldus wait=%ldus src=%dx%d\n",
+                        _US(_vs0,_vs1), _US(_vd0,_vd1),
+                        rf.frame->width, rf.frame->height);
+#undef _US
+            }
+            av_frame_unref(cvt);
+            av_frame_free(&rf.frame);
+            continue;
+        }
+#endif /* GVU_A30 */
+
         struct SwsContext *sws = get_sws(v, rf.frame);
         if (sws) {
             cvt->width  = v->tex_w;
@@ -298,11 +394,24 @@ static int video_sws_thread(void *userdata) {
             cvt->format = AV_PIX_FMT_BGRA;
             av_frame_get_buffer(cvt, 32);
 
+            struct timespec _vs0, _vs1, _vd0, _vd1;
+            clock_gettime(CLOCK_MONOTONIC, &_vs0);
             sws_scale(sws,
                       (const uint8_t * const *)rf.frame->data, rf.frame->linesize,
                       0, rf.frame->height,
                       cvt->data, cvt->linesize);
+            clock_gettime(CLOCK_MONOTONIC, &_vs1);
+            clock_gettime(CLOCK_MONOTONIC, &_vd0);
             fq_push(&v->frame_queue, cvt, rf.pts, &v->abort);
+            clock_gettime(CLOCK_MONOTONIC, &_vd1);
+            static int _vn = 0;
+            if (++_vn % 60 == 0) {
+#define _US(a,b) (((b).tv_sec-(a).tv_sec)*1000000L+((b).tv_nsec-(a).tv_nsec)/1000L)
+                fprintf(stderr, "VIDEO sws=%ldus wait=%ldus src=%dx%d dst=%dx%d\n",
+                        _US(_vs0,_vs1), _US(_vd0,_vd1),
+                        rf.frame->width, rf.frame->height, v->tex_w, v->tex_h);
+#undef _US
+            }
             av_frame_unref(cvt);
         } else {
             /* No sws context — push raw frame directly */
@@ -336,6 +445,12 @@ int video_open(VideoCtx *v, AVCodecParameters *cp, AVRational time_base,
         SDL_Rect fit = video_fit_rect(cp->width, cp->height, 640, 480);
         v->tex_w = fit.w;
         v->tex_h = fit.h;
+        /* Portrait-direct: if source is exactly 2× the fit-rect dimensions,
+           the custom kernel can replace libswscale entirely. The output frame
+           is portrait-oriented (width=tex_h, height=tex_w) and bypasses the
+           SDL texture upload + a30_flip() rotation. */
+        if (cp->width == 2 * fit.w && cp->height == 2 * fit.h)
+            v->portrait_direct = 1;
     }
 #else
     v->tex_w = v->native_w;

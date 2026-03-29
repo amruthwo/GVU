@@ -310,23 +310,6 @@ int main(int argc, char *argv[]) {
         IMG_Quit(); TTF_Quit(); SDL_Quit(); return 1;
     }
 
-    /* Max out the ALSA digital volume at startup so GVU's software volume
-       scale (0–100%) covers the full hardware range from the start.
-       SpruceOS may leave the DAC below maximum, causing the indicator to
-       read 100% while the actual output is quieter than expected. */
-    {
-        static char *vol_argv[] = {
-            "sh", "-c",
-            "amixer sset 'digital volume' 63 >/dev/null 2>&1",
-            NULL
-        };
-        static char *vol_env[] = {
-            "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-            NULL
-        };
-        pid_t vol_pid;
-        posix_spawn(&vol_pid, "/bin/sh", NULL, NULL, vol_argv, vol_env);
-    }
     SDL_Surface *a30_surf = SDL_CreateRGBSurface(0, win_w, win_h, 32,
                                 0x00FF0000u, 0x0000FF00u,
                                 0x000000FFu, 0xFF000000u);
@@ -487,6 +470,7 @@ int main(int argc, char *argv[]) {
                 fprintf(stderr, "audio_wake: seek target=%.3f\n", wake_seek_pos);
                 audio_wake(&player.audio);
                 a30_screen_wake();
+                player_set_volume(&player, player.volume); /* re-sync Soft Volume Master after wake */
                 player_seek_to(&player, wake_seek_pos);
                 SDL_Delay(600);
                 {
@@ -1580,7 +1564,45 @@ int main(int argc, char *argv[]) {
 
         SDL_RenderPresent(renderer);
 #ifdef GVU_A30
-        a30_flip(a30_surf);
+        {
+            struct timespec _f0, _f1;
+            clock_gettime(CLOCK_MONOTONIC, &_f0);
+            if (mode == MODE_PLAYBACK
+                    && player.video.portrait_direct
+                    && player.a30_portrait_frame) {
+                /* Portrait-direct: blit the portrait buffer to fb0 directly.
+                 * has_ui=1 when anything is drawn on the SDL surface (OSD,
+                 * subtitles, dimming) so the composite path handles overlay.
+                 * has_ui=0 is the fast pure-blit path with no strided reads. */
+                int has_ui = player.osd_visible
+                          || player.vol_osd_visible
+                          || player.bri_osd_visible
+                          || player.zoom_osd_visible
+                          || player.audio_osd_visible
+                          || player.sub_osd_visible
+                          || player.wake_osd_visible
+                          || player.state == PLAYER_PAUSED
+                          || player.subtitle.count > 0
+                          || player.brightness < 0.999f;
+                static const float zoom_t[] = { 0.0f, 0.5f, 1.0f };
+                a30_flip_video(a30_surf,
+                               (const Uint32 *)player.a30_portrait_frame->data[0],
+                               player.a30_portrait_frame->width,
+                               zoom_t[player.zoom_mode],
+                               has_ui);
+            } else {
+                a30_flip(a30_surf);
+            }
+            clock_gettime(CLOCK_MONOTONIC, &_f1);
+            if (mode == MODE_PLAYBACK) {
+                static int _fn = 0;
+                if (++_fn % 60 == 0) {
+#define _US(a,b) (((b).tv_sec-(a).tv_sec)*1000000L+((b).tv_nsec-(a).tv_nsec)/1000L)
+                    fprintf(stderr, "FLIP %ldus\n", _US(_f0,_f1));
+#undef _US
+                }
+            }
+        }
 #endif
 
         struct timespec ts_now;
