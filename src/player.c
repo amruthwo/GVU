@@ -580,8 +580,10 @@ static void draw_osd(SDL_Renderer *r, TTF_Font *font, TTF_Font *font_small,
     TTF_SizeUTF8(font, name, &name_w, &dur_dummy);
     int name_x = (win_w - name_w) / 2;
     if (name_x < sc(8, win_w)) name_x = sc(8, win_w);
+    /* OSD background is always dark (rgba 0,0,0,180) — use fixed white
+       like the timestamps above rather than t->text which is dark on light themes. */
     draw_text(r, font, name, name_x, text_y, win_w - sc(16, win_w),
-              t->text.r, t->text.g, t->text.b);
+              0xff, 0xff, 0xff);
 
     /* Pause icon — centred in the area above the OSD bar */
     if (p->state == PLAYER_PAUSED) {
