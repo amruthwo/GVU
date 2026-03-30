@@ -166,6 +166,50 @@ landscape_direct threshold: `if (fit.w == display_w)` — already uses display w
 
 ---
 
+## First Universal Build — Test Results (2026-03-30)
+
+Deployed to Brick, A30, Miyoo Flip, Miyoo Mini Flip (V4 screen), Miyoo Mini V3.
+
+### All-device bugs (pending fixes)
+
+| Bug | Root cause | Fix |
+|---|---|---|
+| Missing GVU icon | `icon.png` not deployed | Copy `icon.png` to app dir |
+| Wrong theme / teal default cover | `gvu.conf` not deployed | Deploy `gvu.conf` to `$APPDIR` |
+| Subtitle search stuck / fails | `spruce/bin/curl` is wrong-arch binary returning HTTP 000; only SpruceOS `wget` supports HTTPS | Rewrite `fetch_subtitles.py` to use `wget` instead of `curl` |
+| Cover scraping stuck | Same wget/curl issue (TVMaze/TMDB HTTPS); also `wget` BusyBox may lack `-T` timeout → hangs | Add `-T 10` timeout to wget calls in `scrape_covers.sh`; confirm wget works |
+| posix_spawn failure leaves subtitle/scrape in stuck state | No sentinel written if Python binary not found | Write error sentinel immediately on spawn failure |
+
+**Key network finding on Brick:**
+- `/mnt/SDCARD/spruce/bin/curl` reports `x86_64-pc-none` arch — returns HTTP 000 for HTTPS (broken on ARM devices)
+- `wget --no-check-certificate` exits 0 for HTTPS — **wget is the correct tool to use**
+- Fix: replace `CURL = "/mnt/SDCARD/spruce/bin/curl"` in `fetch_subtitles.py` with wget subprocess calls
+- Brick Python: `DEVICE_PYTHON3_PATH=/mnt/SDCARD/spruce/flip/bin/python3.10` (note `.10` suffix)
+- Brick PYTHONHOME derivation works: `dirname(dirname(g_python_bin))` → `/mnt/SDCARD/spruce/flip` ✓
+
+### Device-specific bugs (investigate after sdcard swap)
+
+**Miyoo Mini Flip / Mini V4 (armhf, gvu32):**
+- Display upside-down — rotation is 180° not 0°. Need to detect and add a 180° blit path.
+- Resolution: 752×560 (not 640×480). SpruceOS sets `DISPLAY_WIDTH=752 DISPLAY_HEIGHT=560`; gvu32 needs to handle non-640 landscape sizes.
+- Battery indicator not working — different sysfs path for Mini family
+- Audio error: "ALSA: Couldn't open audio device" — different ALSA card/device name on Mini
+- R1/L1 swapped with R2/L2 — Mini evdev key codes differ from A30
+
+**Miyoo Mini V3 (armhf, gvu32):**
+- Display upside-down (same 180° rotation issue)
+- Battery indicator not working
+- Audio error: "ALSA: Couldn't open audio device"
+- R1/L1 swapped with R2/L2
+
+**Miyoo Flip (aarch64, gvu64):**
+- Audio error: "SDL_OpenAudioDevice: Couldn't set audio frequency" — ALSA sample rate mismatch
+- Everything else (display, input, wifi, battery) working correctly
+
+**Brick, A30:** Working well. All major features functional.
+
+---
+
 ## What We Can Ship Without Testing
 - **Flip**: identical hardware to Brick. Safe.
 - **Smart Pro / S**: 64-bit landscape. Low risk with runtime display sizing.
