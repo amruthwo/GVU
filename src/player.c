@@ -341,6 +341,9 @@ void player_close(Player *p) {
 #ifdef GVU_A30
     if (p->a30_portrait_frame) { av_frame_free(&p->a30_portrait_frame); p->a30_portrait_frame = NULL; }
 #endif
+#ifdef GVU_TRIMUI_BRICK
+    if (p->brick_landscape_frame) { av_frame_free(&p->brick_landscape_frame); p->brick_landscape_frame = NULL; }
+#endif
     sub_free(&p->subtitle);
     p->state = PLAYER_STOPPED;
 }
@@ -443,6 +446,20 @@ int player_update(Player *p) {
             else
                 av_frame_unref(p->a30_portrait_frame);
             av_frame_move_ref(p->a30_portrait_frame, frame);
+            video_pop_frame(&p->video);
+            updated = 1;
+            break;
+        }
+#endif
+#ifdef GVU_TRIMUI_BRICK
+        if (p->video.landscape_direct) {
+            /* Landscape-direct path: steal the frame so brick_flip_video()
+               can blit it directly to fb0, bypassing SDL texture upload. */
+            if (!p->brick_landscape_frame)
+                p->brick_landscape_frame = av_frame_alloc();
+            else
+                av_frame_unref(p->brick_landscape_frame);
+            av_frame_move_ref(p->brick_landscape_frame, frame);
             video_pop_frame(&p->video);
             updated = 1;
             break;
@@ -750,7 +767,13 @@ static void draw_brightness_bar(SDL_Renderer *r, TTF_Font *font,
 
 void player_draw(SDL_Renderer *r, TTF_Font *font, TTF_Font *font_small,
                  const Player *p, const Theme *t, int win_w, int win_h) {
+#ifdef GVU_TRIMUI_BRICK
+    /* Clear with alpha=0 so empty pixels are transparent for OSD compositing
+       in brick_flip_video().  brick_flip() forces alpha=0xFF on output. */
+    SDL_SetRenderDrawColor(r, 0, 0, 0, 0x00);
+#else
     SDL_SetRenderDrawColor(r, 0, 0, 0, 0xff);
+#endif
     SDL_RenderClear(r);
 
     /* Auto-hide OSD check is done in player_update(); we just read the flag */
@@ -763,6 +786,9 @@ void player_draw(SDL_Renderer *r, TTF_Font *font, TTF_Font *font_small,
            the SDL surface retains a black video area for OSD compositing. */
 #ifdef GVU_A30
         if (!p->video.portrait_direct)
+#endif
+#ifdef GVU_TRIMUI_BRICK
+        if (!p->video.landscape_direct)
 #endif
         {
             static const float zoom_t[] = { 0.0f, 0.5f, 1.0f }; /* FIT, WIDE, FILL */
@@ -804,8 +830,16 @@ void player_draw(SDL_Renderer *r, TTF_Font *font, TTF_Font *font_small,
         draw_osd(r, font, font_small, p, t, win_w, win_h);
     }
 
-    /* Brightness dimming overlay — drawn over everything except the HUD bars */
-    if (p->brightness < 0.999f) {
+    /* Brightness dimming overlay — drawn over everything except the HUD bars.
+     * Skip for landscape_direct on Brick: blending over alpha=0 pixels would
+     * make them appear opaque (covering video).  Brightness is applied
+     * per-pixel in brick_flip_video() instead. */
+#ifdef GVU_TRIMUI_BRICK
+    if (!p->video.landscape_direct && p->brightness < 0.999f)
+#else
+    if (p->brightness < 0.999f)
+#endif
+    {
         Uint8 alpha = (Uint8)((1.0f - p->brightness) * 220.0f);
         SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
         SDL_SetRenderDrawColor(r, 0, 0, 0, alpha);
@@ -814,7 +848,13 @@ void player_draw(SDL_Renderer *r, TTF_Font *font, TTF_Font *font_small,
         SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_NONE);
     }
 
+#ifdef GVU_TRIMUI_BRICK
+    /* Brick has its own system volume OSD — don't duplicate it.
+       Still show the MUTE indicator so the user knows audio is silenced. */
+    if (p->muted)
+#else
     if (p->vol_osd_visible || p->muted)
+#endif
         draw_volume_bar(r, font, p, t, win_w);
     if (p->bri_osd_visible)
         draw_brightness_bar(r, font, p, t, win_w);

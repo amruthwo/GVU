@@ -10,10 +10,13 @@
 
 #define TITLE_H    32
 #define HEADER_H   26
-#define ENTRY_H    62
 #define HINT_BAR_H 24
 #define PADDING     8
 #define BAR_H       4    /* height of the progress bar strip */
+
+/* Entry height is computed from font metrics in history_draw() and cached here
+ * so the geometry helpers can use it without needing font parameters. */
+static int s_entry_h = 62;  /* default matches original fixed value */
 
 /* -------------------------------------------------------------------------
  * Internal geometry helpers
@@ -25,22 +28,22 @@ static int entry_abs_y(const HistoryState *h, int nav_idx) {
     if (h->in_progress_count > 0) {
         y += HEADER_H;
         if (nav_idx < h->in_progress_count)
-            return y + nav_idx * ENTRY_H;
-        y += h->in_progress_count * ENTRY_H;
+            return y + nav_idx * s_entry_h;
+        y += h->in_progress_count * s_entry_h;
         nav_idx -= h->in_progress_count;
     }
     if (h->recently_watched_count > 0)
         y += HEADER_H;
-    return y + nav_idx * ENTRY_H;
+    return y + nav_idx * s_entry_h;
 }
 
 /* Total height of the scrollable content area. */
 static int total_content_h(const HistoryState *h) {
     int h_px = 0;
     if (h->in_progress_count > 0)
-        h_px += HEADER_H + h->in_progress_count * ENTRY_H;
+        h_px += HEADER_H + h->in_progress_count * s_entry_h;
     if (h->recently_watched_count > 0)
-        h_px += HEADER_H + h->recently_watched_count * ENTRY_H;
+        h_px += HEADER_H + h->recently_watched_count * s_entry_h;
     return h_px;
 }
 
@@ -57,8 +60,8 @@ static void clamp_scroll(HistoryState *h, int content_h) {
 
     if (abs_y < h->scroll_y)
         h->scroll_y = abs_y;
-    if (abs_y + ENTRY_H > h->scroll_y + content_h)
-        h->scroll_y = abs_y + ENTRY_H - content_h;
+    if (abs_y + s_entry_h > h->scroll_y + content_h)
+        h->scroll_y = abs_y + s_entry_h - content_h;
 
     int max_scroll = total_content_h(h) - content_h;
     if (max_scroll < 0) max_scroll = 0;
@@ -135,6 +138,11 @@ void history_draw(SDL_Renderer *renderer, TTF_Font *font,
                   const Theme *theme, int win_w, int win_h) {
     const Theme *t = theme;
 
+    /* Compute entry height from actual font metrics so layout scales with
+     * font size (important on larger screens like the Trimui Brick). */
+    s_entry_h = PADDING + TTF_FontHeight(font) + 2
+                + TTF_FontHeight(font_small) + BAR_H + PADDING + 4;
+
     /* Keep scroll in sync with selection before rendering */
     int content_h = win_h - TITLE_H - HINT_BAR_H;
     clamp_scroll(h, content_h);
@@ -189,7 +197,7 @@ void history_draw(SDL_Renderer *renderer, TTF_Font *font,
 
             for (int i = 0; i < h->in_progress_count; i++) {
                 /* Skip entries fully above the viewport */
-                if (y + ENTRY_H <= content_top) { y += ENTRY_H; continue; }
+                if (y + s_entry_h <= content_top) { y += s_entry_h; continue; }
                 /* Stop when below viewport */
                 if (y >= content_top + content_h) break;
 
@@ -200,12 +208,12 @@ void history_draw(SDL_Renderer *renderer, TTF_Font *font,
                 /* Row background */
                 if (sel) {
                     fill_rect(renderer, PADDING, y,
-                              win_w - PADDING * 2, ENTRY_H,
+                              win_w - PADDING * 2, s_entry_h,
                               t->highlight_bg.r, t->highlight_bg.g,
                               t->highlight_bg.b, 0xff);
                 } else if (i % 2 == 0) {
                     fill_rect(renderer, PADDING, y,
-                              win_w - PADDING * 2, ENTRY_H,
+                              win_w - PADDING * 2, s_entry_h,
                               dim(t->background.r, 8),
                               dim(t->background.g, 8),
                               dim(t->background.b, 8), 0xff);
@@ -243,7 +251,7 @@ void history_draw(SDL_Renderer *renderer, TTF_Font *font,
                           sel ? dim(tc.b, 20) : t->secondary.b);
 
                 /* Progress bar */
-                int bar_y = y + ENTRY_H - BAR_H - 3;
+                int bar_y = y + s_entry_h - BAR_H - 3;
                 int bar_w = win_w - PADDING * 4;
                 /* Background track */
                 fill_rect(renderer, PADDING * 2, bar_y, bar_w, BAR_H,
@@ -267,7 +275,7 @@ void history_draw(SDL_Renderer *renderer, TTF_Font *font,
                     }
                 }
 
-                y += ENTRY_H;
+                y += s_entry_h;
             }
         }
 
@@ -285,7 +293,7 @@ void history_draw(SDL_Renderer *renderer, TTF_Font *font,
             y += HEADER_H;
 
             for (int i = 0; i < h->recently_watched_count; i++) {
-                if (y + ENTRY_H <= content_top) { y += ENTRY_H; continue; }
+                if (y + s_entry_h <= content_top) { y += s_entry_h; continue; }
                 if (y >= content_top + content_h) break;
 
                 int nav_idx = h->in_progress_count + i;
@@ -295,12 +303,12 @@ void history_draw(SDL_Renderer *renderer, TTF_Font *font,
                 /* Row background */
                 if (sel) {
                     fill_rect(renderer, PADDING, y,
-                              win_w - PADDING * 2, ENTRY_H,
+                              win_w - PADDING * 2, s_entry_h,
                               t->highlight_bg.r, t->highlight_bg.g,
                               t->highlight_bg.b, 0xff);
                 } else if (i % 2 == 0) {
                     fill_rect(renderer, PADDING, y,
-                              win_w - PADDING * 2, ENTRY_H,
+                              win_w - PADDING * 2, s_entry_h,
                               dim(t->background.r, 8),
                               dim(t->background.g, 8),
                               dim(t->background.b, 8), 0xff);
@@ -326,7 +334,7 @@ void history_draw(SDL_Renderer *renderer, TTF_Font *font,
                           sel ? dim(tc.g, 20) : t->secondary.g,
                           sel ? dim(tc.b, 20) : t->secondary.b);
 
-                y += ENTRY_H;
+                y += s_entry_h;
             }
         }
     }

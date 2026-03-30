@@ -51,7 +51,33 @@ GVU_A30_IMAGE  ?= gvu-a30
 GVU_A30_DEPLOY ?= spruce@192.168.1.62
 GVU_A30_PATH   ?= /mnt/SDCARD/App/GVU
 
-.PHONY: all clean test miyoo-a30-build miyoo-a30-docker miyoo-a30-package miyoo-a30-deploy
+# -------------------------------------------------------------------------
+# Trimui Brick cross-compile settings
+# Intended to run INSIDE the Docker container built from
+# cross-compile/trimui-brick/Dockerfile.gvu.
+# -------------------------------------------------------------------------
+BRICK_CC      = aarch64-linux-gnu-gcc
+BRICK_CFLAGS  = -Wall -Wextra -std=c11 -O2 -D_POSIX_C_SOURCE=200809L \
+                -DGVU_TRIMUI_BRICK \
+                -march=armv8-a \
+                $(shell pkg-config --cflags sdl2 SDL2_image SDL2_ttf \
+                    libavformat libavcodec libavutil libswresample libswscale)
+# Static linking — gvu64 NEEDED: only libc, libm, libpthread, libdl, libasound.so.2
+BRICK_LDFLAGS = -Wl,--start-group \
+                $(shell pkg-config --static --libs sdl2 SDL2_image SDL2_ttf \
+                    libavformat libavcodec libavutil libswresample libswscale) \
+                -Wl,--end-group \
+                -lm -lpthread -ldl -static-libgcc -static-libstdc++
+
+BRICK_SRCS    = $(SRCS) $(SRC_DIR)/brick_screen.c
+BRICK_TARGET  = gvu64
+
+GVU_BRICK_IMAGE  ?= gvu-brick
+GVU_BRICK_DEPLOY ?= spruce@192.168.1.45
+GVU_BRICK_PATH   ?= /mnt/SDCARD/App/GVU
+
+.PHONY: all clean test miyoo-a30-build miyoo-a30-docker miyoo-a30-package miyoo-a30-deploy \
+        trimui-brick-build trimui-brick-docker trimui-brick-package trimui-brick-deploy
 
 all: $(TARGET)
 
@@ -99,6 +125,43 @@ miyoo-a30-deploy: build/gvu32
 	ssh $(GVU_A30_DEPLOY) "chmod +x $(GVU_A30_PATH)/launch.sh $(GVU_A30_PATH)/gvu32 $(GVU_A30_PATH)/resources/scrape_covers.sh $(GVU_A30_PATH)/resources/clear_covers.sh"
 	@echo "Deployed to $(GVU_A30_DEPLOY):$(GVU_A30_PATH)"
 
+# ---- Trimui Brick targets ------------------------------------------------
+
+# Cross-compile inside Docker (called by trimui-brick-docker, or directly inside container)
+trimui-brick-build: $(BRICK_SRCS)
+	$(BRICK_CC) $(BRICK_CFLAGS) -o $(BRICK_TARGET) $^ $(BRICK_LDFLAGS)
+	@echo "Built: $(BRICK_TARGET)"
+
+# Build Docker image + compile gvu64 + collect libs
+trimui-brick-docker:
+	docker build -f cross-compile/trimui-brick/Dockerfile.gvu \
+	             -t $(GVU_BRICK_IMAGE) .
+	mkdir -p build
+	env -u USER docker run --rm -v $(CURDIR):/gvu $(GVU_BRICK_IMAGE) \
+	           sh cross-compile/trimui-brick/build_inside_docker.sh
+
+# Assemble SpruceOS zip from build/ artifacts
+trimui-brick-package: VERSION ?= test
+trimui-brick-package:
+	sh cross-compile/trimui-brick/package_gvu_brick.sh $(VERSION)
+
+# Deploy directly to device over SSH (no zip — raw install for testing)
+trimui-brick-deploy: build/gvu64
+	ssh $(GVU_BRICK_DEPLOY) "mkdir -p $(GVU_BRICK_PATH)/libs64 $(GVU_BRICK_PATH)/resources/fonts"
+	scp build/gvu64 $(GVU_BRICK_DEPLOY):$(GVU_BRICK_PATH)/
+	scp -r build/libs64 $(GVU_BRICK_DEPLOY):$(GVU_BRICK_PATH)/
+	scp cross-compile/trimui-brick/gvu_base/launch.sh \
+	    cross-compile/trimui-brick/gvu_base/config.json \
+	    $(GVU_BRICK_DEPLOY):$(GVU_BRICK_PATH)/
+	scp resources/fonts/DejaVuSans.ttf \
+	    $(GVU_BRICK_DEPLOY):$(GVU_BRICK_PATH)/resources/fonts/
+	scp resources/default_cover.png \
+	    resources/scrape_covers.sh \
+	    resources/clear_covers.sh \
+	    $(GVU_BRICK_DEPLOY):$(GVU_BRICK_PATH)/resources/
+	ssh $(GVU_BRICK_DEPLOY) "chmod +x $(GVU_BRICK_PATH)/launch.sh $(GVU_BRICK_PATH)/gvu64 $(GVU_BRICK_PATH)/resources/scrape_covers.sh $(GVU_BRICK_PATH)/resources/clear_covers.sh"
+	@echo "Deployed to $(GVU_BRICK_DEPLOY):$(GVU_BRICK_PATH)"
+
 clean:
-	rm -f $(TARGET) $(A30_TARGET)
-	rm -rf build/gvu32 build/libs32
+	rm -f $(TARGET) $(A30_TARGET) $(BRICK_TARGET)
+	rm -rf build/gvu32 build/libs32 build/gvu64 build/libs64

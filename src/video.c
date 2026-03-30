@@ -426,6 +426,18 @@ int video_open(VideoCtx *v, AVCodecParameters *cp, AVRational time_base,
         if (cp->width == 2 * fit.w && cp->height == 2 * fit.h)
             v->portrait_direct = 1;
     }
+#elif defined(GVU_TRIMUI_BRICK)
+    /* Pre-scale to fit 1024×768 so SDL blits at 1:1 (no software bilinear).
+       When tex_w == BRICK_W the decoded BGRA frame is full panel-width, so we
+       can blit it directly to fb0 via brick_flip_video() without going through
+       the SDL texture upload + software render path (landscape_direct). */
+    {
+        SDL_Rect fit = video_fit_rect(cp->width, cp->height, 1024, 768);
+        v->tex_w = fit.w;
+        v->tex_h = fit.h;
+        if (fit.w == 1024)
+            v->landscape_direct = 1;
+    }
 #else
     v->tex_w = v->native_w;
     v->tex_h = v->native_h;

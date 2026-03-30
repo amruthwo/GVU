@@ -19,6 +19,12 @@
 #include "statusbar.h"
 #ifdef GVU_A30
 #include "a30_screen.h"
+#endif
+#ifdef GVU_TRIMUI_BRICK
+#include "brick_screen.h"
+#endif
+#if defined(GVU_A30) || defined(GVU_TRIMUI_BRICK)
+#define GVU_HW 1  /* running on hardware device, not desktop */
 #include <spawn.h>
 #include <sys/wait.h>
 #endif
@@ -44,9 +50,9 @@ typedef enum {
     MODE_PLAYBACK,
 } AppMode;
 
-#ifdef GVU_A30
+#ifdef GVU_HW
 /* -------------------------------------------------------------------------
- * Subtitle download workflow (A30 only — requires Python + curl on device)
+ * Subtitle download workflow (requires Python + curl on device)
  * ---------------------------------------------------------------------- */
 
 #define SUB_DONE_FILE    "/tmp/gvu_sub_done"
@@ -89,16 +95,27 @@ static void make_srt_dest(const char *video_path, char *buf, int buf_sz) {
     snprintf(buf, buf_sz, "%s.srt", video_path);
 }
 
-static const char *S_PYTHON     = "/mnt/SDCARD/spruce/bin/python/bin/python3.10";
-static const char *S_PYENV      = "PYTHONHOME=/mnt/SDCARD/spruce/bin/python";
 static const char *S_PATH_ENV   = "PATH=/usr/local/bin:/usr/bin:/bin:/mnt/SDCARD/spruce/bin";
 static const char *S_SSL_ENV    = "SSL_CERT_FILE=/mnt/SDCARD/spruce/etc/ca-certificates.crt";
 static const char *S_SCRIPT     = "resources/fetch_subtitles.py";
 
+/* Platform-conditional Python paths */
+static const char *sub_python_bin(void) {
+    return (get_platform() == PLATFORM_BRICK)
+        ? "/mnt/SDCARD/spruce/flip/bin/python3"
+        : "/mnt/SDCARD/spruce/bin/python/bin/python3.10";
+}
+static const char *sub_python_env(void) {
+    return (get_platform() == PLATFORM_BRICK)
+        ? "PYTHONHOME=/mnt/SDCARD/spruce/flip"
+        : "PYTHONHOME=/mnt/SDCARD/spruce/bin/python";
+}
+
 static void sub_spawn(SubWorkflow *wf, char **argv_buf) {
     unlink(SUB_DONE_FILE);
     unlink(SUB_RESULTS_FILE);
-    char *env_buf[] = { (char *)S_PYENV, (char *)S_PATH_ENV, (char *)S_SSL_ENV, NULL };
+    const char *pyenv = sub_python_env();
+    char *env_buf[] = { (char *)pyenv, (char *)S_PATH_ENV, (char *)S_SSL_ENV, NULL };
     int logfd = open(SUB_LOG_FILE, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     posix_spawn_file_actions_t fa;
     posix_spawn_file_actions_init(&fa);
@@ -107,7 +124,7 @@ static void sub_spawn(SubWorkflow *wf, char **argv_buf) {
         posix_spawn_file_actions_adddup2(&fa, logfd, STDERR_FILENO);
         posix_spawn_file_actions_addclose(&fa, logfd);
     }
-    if (posix_spawn(&wf->child_pid, S_PYTHON, &fa, NULL, argv_buf, env_buf) != 0) {
+    if (posix_spawn(&wf->child_pid, sub_python_bin(), &fa, NULL, argv_buf, env_buf) != 0) {
         perror("posix_spawn subtitle");
         wf->child_pid = 0;
     }
@@ -117,7 +134,7 @@ static void sub_spawn(SubWorkflow *wf, char **argv_buf) {
 
 static void sub_start_search(SubWorkflow *wf) {
     char *argv_buf[] = {
-        (char *)S_PYTHON, (char *)S_SCRIPT, "search",
+        (char *)sub_python_bin(), (char *)S_SCRIPT, "search",
         wf->video_path,
         (char *)config_subdl_key(),
         (char *)config_sub_lang(),
@@ -130,7 +147,7 @@ static void sub_start_search(SubWorkflow *wf) {
 static void sub_start_download(SubWorkflow *wf) {
     SubResult *sr = &wf->results[wf->result_sel];
     char *argv_buf[] = {
-        (char *)S_PYTHON, (char *)S_SCRIPT, "download",
+        (char *)sub_python_bin(), (char *)S_SCRIPT, "download",
         sr->provider, sr->download_key, wf->srt_dest,
         NULL
     };
@@ -194,7 +211,7 @@ static int parse_result_line(const char *line, SubResult *sr) {
     sr->hi        = atoi(fields[5]);
     return 1;
 }
-#endif /* GVU_A30 */
+#endif /* GVU_HW */
 
 /* Navigate the browser to the folder/file that contains path. */
 static void navigate_to_file(BrowserState *state, const MediaLibrary *lib,
@@ -269,6 +286,9 @@ int main(int argc, char *argv[]) {
 #ifdef GVU_A30
     int win_w = 640, win_h = 480;  /* A30 panel: landscape 640×480 */
     (void)argc; (void)argv;
+#elif defined(GVU_TRIMUI_BRICK)
+    int win_w = 1024, win_h = 768; /* Brick panel: landscape 1024×768 */
+    (void)argc; (void)argv;
 #else
     /* Optional: ./gvu [width height]  — for testing other device resolutions.
        Supported SpruceOS resolutions: 640×480, 750×560, 1024×768, 1280×720 */
@@ -280,7 +300,7 @@ int main(int argc, char *argv[]) {
 
     signal(SIGTERM, handle_sig);
     signal(SIGINT,  handle_sig);
-#ifdef GVU_A30
+#ifdef GVU_HW
     signal(SIGCHLD, SIG_IGN);  /* auto-reap posix_spawn children (amixer) */
 #endif
 
@@ -310,20 +330,45 @@ int main(int argc, char *argv[]) {
         IMG_Quit(); TTF_Quit(); SDL_Quit(); return 1;
     }
 
-    SDL_Surface *a30_surf = SDL_CreateRGBSurface(0, win_w, win_h, 32,
+    SDL_Surface *hw_surf = SDL_CreateRGBSurface(0, win_w, win_h, 32,
                                 0x00FF0000u, 0x0000FF00u,
                                 0x000000FFu, 0xFF000000u);
-    if (!a30_surf) {
+    if (!hw_surf) {
         fprintf(stderr, "SDL_CreateRGBSurface: %s\n", SDL_GetError());
         a30_screen_close(); IMG_Quit(); TTF_Quit(); SDL_Quit(); return 1;
     }
-    renderer = SDL_CreateSoftwareRenderer(a30_surf);
-    /* Pre-rotated portrait OSD buffer: avoids strided SDL surface reads in
-       the composite path.  Refreshed at most once every OSD_REFRESH_FRAMES. */
+    renderer = SDL_CreateSoftwareRenderer(hw_surf);
+    /* Pre-rendered OSD buffer: avoids strided SDL surface reads in composite path.
+       Refreshed at most once every OSD_REFRESH_FRAMES. */
     Uint32 *osd_portrait_buf = (Uint32 *)malloc(A30_PORTRAIT_BUF_PIXELS * sizeof(Uint32));
     int osd_frame_cnt = 0;
-    int osd_rot_frame = -(1 << 20);  /* force rotation on first has_ui frame */
+    int osd_rot_frame = -(1 << 20);
     int osd_had_ui    = 0;
+#define OSD_REFRESH_FRAMES 4
+#elif defined(GVU_TRIMUI_BRICK)
+    /* Brick: SDL_VIDEODRIVER=dummy — render into a CPU surface, flip to fb0 */
+    if (brick_screen_init() != 0) {
+        fprintf(stderr, "brick_screen_init failed\n");
+        IMG_Quit(); TTF_Quit(); SDL_Quit(); return 1;
+    }
+
+    SDL_Surface *hw_surf = SDL_CreateRGBSurface(0, win_w, win_h, 32,
+                                0x00FF0000u, 0x0000FF00u,
+                                0x000000FFu, 0xFF000000u);
+    if (!hw_surf) {
+        fprintf(stderr, "SDL_CreateRGBSurface: %s\n", SDL_GetError());
+        brick_screen_close(); IMG_Quit(); TTF_Quit(); SDL_Quit(); return 1;
+    }
+    renderer = SDL_CreateSoftwareRenderer(hw_surf);
+    /* Landscape OSD buffer: refreshed at most once every OSD_REFRESH_FRAMES
+     * during landscape_direct video playback. */
+    Uint32 *osd_landscape_buf = (Uint32 *)malloc(BRICK_PORTRAIT_BUF_PIXELS * sizeof(Uint32));
+    int osd_frame_cnt = 0;
+    int osd_rot_frame = -(1 << 20);
+    int osd_had_ui    = 0;
+    /* Keep A30 name consistent — unused on Brick non-direct path */
+    Uint32 *osd_portrait_buf = osd_landscape_buf;
+    (void)osd_portrait_buf;
 #define OSD_REFRESH_FRAMES 4
 #else
     win = SDL_CreateWindow("GVU",
@@ -344,7 +389,7 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Init error: %s / %s\n", SDL_GetError(), TTF_GetError());
         goto cleanup;
     }
-#ifndef GVU_A30
+#ifndef GVU_HW
     if (!win) {
         fprintf(stderr, "SDL_CreateWindow: %s\n", SDL_GetError());
         goto cleanup;
@@ -353,7 +398,7 @@ int main(int argc, char *argv[]) {
 
     SDL_DisableScreenSaver();
 
-#ifdef GVU_A30
+#ifdef GVU_HW
     /* Write icon.png so the SpruceOS launcher shows the current theme's cover art.
        Done at every launch so a fresh install, or a theme change made on a
        previous run, is always reflected in the app list. */
@@ -390,7 +435,7 @@ int main(int argc, char *argv[]) {
     /* START hold-modifier state for subtitle sync / subtitle workflow */
     int      start_held             = 0;
     int      start_used_as_modifier = 0;
-#ifdef GVU_A30
+#ifdef GVU_HW
     SubWorkflow sub_wf;
     memset(&sub_wf, 0, sizeof(sub_wf));
     /* Download result toast */
@@ -419,7 +464,7 @@ int main(int argc, char *argv[]) {
     int          overlay_active = 0;
     SDL_Texture *help_cache     = NULL;   /* pre-rendered help overlay texture */
 
-#ifdef GVU_A30
+#ifdef GVU_HW
     /* Cover art scraping state */
     int    scrape_confirm     = 0;   /* confirmation overlay active */
     int    scrape_active      = 0;   /* scrape script running       */
@@ -435,7 +480,7 @@ int main(int argc, char *argv[]) {
     Uint32       menu_down_at   = 0;
     TutorialState tutorial      = { .active = !config_firstrun_done(), .slide = 0 };
 
-#ifdef GVU_A30
+#ifdef GVU_HW
     /* Sleep/wake detection: track SDL_GetTicks gap between frames.
        A gap > 2s while playing means the device woke from sleep. */
     Uint32 wake_prev_frame = 0;
@@ -464,7 +509,7 @@ int main(int argc, char *argv[]) {
         struct timespec ts_frame_start;
         clock_gettime(CLOCK_MONOTONIC, &ts_frame_start);
 
-#ifdef GVU_A30
+#ifdef GVU_HW
         /* Primary sleep/wake detection: large gap in frame timestamps.
            wake_prev_frame is only updated while actively playing so that
            slow player_open calls don't look like a sleep/wake gap. */
@@ -476,7 +521,11 @@ int main(int argc, char *argv[]) {
                 double wake_seek_pos = audio_get_clock(&player.audio);
                 fprintf(stderr, "audio_wake: seek target=%.3f\n", wake_seek_pos);
                 audio_wake(&player.audio);
+#ifdef GVU_A30
                 a30_screen_wake();
+#else
+                brick_screen_wake();
+#endif
                 player_set_volume(&player, player.volume); /* re-sync Soft Volume Master after wake */
                 player_seek_to(&player, wake_seek_pos);
                 SDL_Delay(600);
@@ -547,8 +596,12 @@ int main(int argc, char *argv[]) {
         if (frame_start >= wake_diag_until && wake_diag_until)
             wake_diag_until = 0;
 
+#ifdef GVU_A30
         a30_poll_events();
+#else
+        brick_poll_events();
 #endif
+#endif /* GVU_HW */
 
         SDL_Event ev;
         while (SDL_PollEvent(&ev)) {
@@ -612,7 +665,7 @@ int main(int argc, char *argv[]) {
                 continue;
             }
 
-#ifdef GVU_A30
+#ifdef GVU_HW
             /* Subtitle workflow intercepts all input when active */
             if (sub_wf.state != SUB_NONE) {
                 /* START released while workflow is active — clear modifier state
@@ -667,7 +720,7 @@ int main(int argc, char *argv[]) {
 #endif
 
             if (mode == MODE_BROWSER) {
-#ifdef GVU_A30
+#ifdef GVU_HW
                 /* Scrape confirmation: intercept A (confirm) and B (cancel) */
                 if (scrape_confirm && ev.type == SDL_KEYDOWN) {
                     SDL_Keycode ck = ev.key.keysym.sym;
@@ -719,7 +772,7 @@ int main(int argc, char *argv[]) {
                     continue;
                 }
 #endif
-#ifdef GVU_A30
+#ifdef GVU_HW
                 /* In VIEW_FILES, START (SDLK_RETURN) triggers subtitle workflow.
                    Use the same deferred-modifier pattern as playback:
                    - tap START → search (if sidecar absent) or toggle existing
@@ -781,7 +834,7 @@ int main(int argc, char *argv[]) {
                 /* X button / Shift → open history page (suppress if START is held) */
                 if (ev.type == SDL_KEYDOWN &&
                     ev.key.keysym.sym == SDLK_LSHIFT
-#ifdef GVU_A30
+#ifdef GVU_HW
                     && !start_held
 #endif
                 ) {
@@ -805,7 +858,7 @@ int main(int argc, char *argv[]) {
                     if (!default_cover)
                         default_cover = IMG_LoadTexture(renderer,
                                                         "resources/default_cover.png");
-#ifdef GVU_A30
+#ifdef GVU_HW
                     theme_save_app_icon("resources/app_icon.svg", "icon.png");
 #endif
                     state.action = BROWSER_ACTION_NONE;
@@ -835,7 +888,7 @@ int main(int argc, char *argv[]) {
                         }
                     }
                     state.action = BROWSER_ACTION_NONE;
-#ifdef GVU_A30
+#ifdef GVU_HW
                 } else if (state.action == BROWSER_ACTION_LAYOUT_CHANGED) {
                     config_set_layout((int)state.layout);
                     config_set_season_layout((int)state.season_layout);
@@ -968,7 +1021,7 @@ int main(int argc, char *argv[]) {
                         /* START released: fire toggle only if not used as modifier.
                            If no subtitle is loaded, trigger the downloader instead. */
                         if (!start_used_as_modifier) {
-#ifdef GVU_A30
+#ifdef GVU_HW
                             if (player.subtitle.count > 0)
                                 player_toggle_subs(&player);
                             else
@@ -1006,7 +1059,7 @@ int main(int argc, char *argv[]) {
                                 player.sub_osd_visible = 1;
                                 player.sub_osd_hide_at = SDL_GetTicks() + 1500;
                                 break;
-#ifdef GVU_A30
+#ifdef GVU_HW
                             case SDLK_LSHIFT: /* X — force re-download subtitles */
                                 sub_workflow_trigger(&sub_wf, player.path, 1, 1);
                                 break;
@@ -1210,7 +1263,7 @@ int main(int argc, char *argv[]) {
             }
         }
 
-#ifdef GVU_A30
+#ifdef GVU_HW
         /* Poll for scrape completion via sentinel file */
         if (scrape_active && access(SCRAPE_DONE_FILE, F_OK) == 0) {
             scrape_active = 0;
@@ -1287,7 +1340,7 @@ int main(int argc, char *argv[]) {
         }
 #endif
 
-#ifdef GVU_A30
+#ifdef GVU_HW
         /* Poll for subtitle search / download completion */
         if ((sub_wf.state == SUB_SEARCHING || sub_wf.state == SUB_DOWNLOADING) &&
                 access(SUB_DONE_FILE, F_OK) == 0) {
@@ -1416,7 +1469,7 @@ int main(int argc, char *argv[]) {
             error_draw(renderer, font, font_small, theme_get(), win_w, win_h,
                        error_path, error_msg);
         }
-#ifdef GVU_A30
+#ifdef GVU_HW
         /* Scrape confirmation overlay */
         if (scrape_confirm && scrape_folder_idx >= 0 &&
                 scrape_folder_idx < lib.folder_count) {
@@ -1529,7 +1582,7 @@ int main(int argc, char *argv[]) {
         }
 #endif
 
-#ifdef GVU_A30
+#ifdef GVU_HW
         /* Subtitle workflow overlays */
         if (sub_wf.state == SUB_LANG_PICK)
             lang_pick_draw(renderer, font, font_small, theme_get(), win_w, win_h,
@@ -1594,7 +1647,7 @@ int main(int argc, char *argv[]) {
                    or the refresh interval has elapsed (OSD animates). */
                 if (!osd_had_ui ||
                         osd_frame_cnt - osd_rot_frame >= OSD_REFRESH_FRAMES) {
-                    a30_surface_to_portrait(a30_surf, osd_portrait_buf);
+                    a30_surface_to_portrait(hw_surf, osd_portrait_buf);
                     osd_rot_frame = osd_frame_cnt;
                 }
                 osd_ptr = osd_portrait_buf;
@@ -1606,7 +1659,41 @@ int main(int argc, char *argv[]) {
                            player.a30_portrait_frame->width,
                            zoom_t[player.zoom_mode]);
         } else {
-            a30_flip(a30_surf);
+            a30_flip(hw_surf);
+        }
+#elif defined(GVU_TRIMUI_BRICK)
+        if (mode == MODE_PLAYBACK
+                && player.video.landscape_direct
+                && player.brick_landscape_frame) {
+            int has_ui = player.osd_visible
+                      || player.vol_osd_visible
+                      || player.bri_osd_visible
+                      || player.zoom_osd_visible
+                      || player.audio_osd_visible
+                      || player.sub_osd_visible
+                      || player.wake_osd_visible
+                      || player.state == PLAYER_PAUSED
+                      || player.subtitle.count > 0
+                      || player.brightness < 0.999f;
+            osd_frame_cnt++;
+            const Uint32 *osd_ptr = NULL;
+            if (has_ui && osd_landscape_buf) {
+                if (!osd_had_ui ||
+                        osd_frame_cnt - osd_rot_frame >= OSD_REFRESH_FRAMES) {
+                    brick_surface_to_bgra(hw_surf, osd_landscape_buf);
+                    osd_rot_frame = osd_frame_cnt;
+                }
+                osd_ptr = osd_landscape_buf;
+            }
+            osd_had_ui = has_ui;
+            static const float zoom_t[] = { 0.0f, 0.5f, 1.0f };
+            brick_flip_video(osd_ptr,
+                             (const Uint32 *)player.brick_landscape_frame->data[0],
+                             player.brick_landscape_frame->height,
+                             zoom_t[player.zoom_mode],
+                             player.brightness);
+        } else {
+            brick_flip(hw_surf);
         }
 #endif
 
@@ -1638,10 +1725,14 @@ cleanup:
     if (font_small) TTF_CloseFont(font_small);
     if (font)       TTF_CloseFont(font);
     if (renderer)   SDL_DestroyRenderer(renderer);
-#ifdef GVU_A30
+#ifdef GVU_HW
     free(osd_portrait_buf);
-    if (a30_surf)   SDL_FreeSurface(a30_surf);
+    if (hw_surf) SDL_FreeSurface(hw_surf);
+#ifdef GVU_A30
     a30_screen_close();
+#else
+    brick_screen_close();
+#endif
 #else
     if (win)        SDL_DestroyWindow(win);
 #endif

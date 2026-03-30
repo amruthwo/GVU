@@ -65,6 +65,10 @@ typedef struct {
        of libswscale.  Frames in frame_queue are then portrait-oriented BGRA
        with width=tex_h and height=tex_w, bypassing the SDL texture path. */
     int                portrait_direct;
+    /* Brick only: 1 when tex_w == BRICK_W, meaning the sws output is a full-
+       width landscape BGRA buffer that can be blitted to fb0 directly via
+       brick_flip_video(), bypassing the SDL texture upload + render path. */
+    int                landscape_direct;
 } VideoCtx;
 
 int  video_open (VideoCtx *v, AVCodecParameters *cp, AVRational time_base,

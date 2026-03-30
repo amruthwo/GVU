@@ -1,0 +1,8 @@
+{
+  "label": "GVU",
+  "icon": "icon.png",
+  "launch": "launch.sh",
+  "description": "Video player for SpruceOS",
+  "devices": ["TRIMUI_BRICK"],
+  "hideInSimpleMode": false
+}

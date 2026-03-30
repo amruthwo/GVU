@@ -76,6 +76,12 @@ typedef struct {
        Used by a30_flip_video() in place of the SDL texture path. */
     AVFrame     *a30_portrait_frame;
 #endif
+#ifdef GVU_TRIMUI_BRICK
+    /* Landscape-direct path: latest landscape BGRA frame (tex_w × tex_h).
+       Set in player_update() when video.landscape_direct is active.
+       Used by brick_flip_video() in place of the SDL texture path. */
+    AVFrame     *brick_landscape_frame;
+#endif
 } Player;
 
 /* Open file, initialise demux + audio + video. Does not start playback. */

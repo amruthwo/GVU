@@ -1,4 +1,5 @@
 #include "statusbar.h"
+#include "platform.h"
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -71,20 +72,36 @@ static void update_battery(void) {
     if (s_battery_pct >= 0 && now - s_battery_tick < BATTERY_INTERVAL_MS) return;
     s_battery_tick = now;
 
-    FILE *f = fopen("/sys/class/power_supply/battery/capacity", "r");
-    if (f) {
+    /* Try platform-specific path first, fall back to generic */
+    static const char * const cap_paths[] = {
+        "/sys/class/power_supply/axp2202-battery/capacity",  /* Trimui Brick */
+        "/sys/class/power_supply/battery/capacity",          /* A30 / generic */
+        NULL
+    };
+    static const char * const sta_paths[] = {
+        "/sys/class/power_supply/axp2202-battery/status",
+        "/sys/class/power_supply/battery/status",
+        NULL
+    };
+
+    for (int i = 0; cap_paths[i]; i++) {
+        FILE *f = fopen(cap_paths[i], "r");
+        if (!f) continue;
         int pct = -1;
         if (fscanf(f, "%d", &pct) == 1 && pct >= 0 && pct <= 100)
             s_battery_pct = pct;
         fclose(f);
+        break;
     }
 
-    f = fopen("/sys/class/power_supply/battery/status", "r");
-    if (f) {
+    for (int i = 0; sta_paths[i]; i++) {
+        FILE *f = fopen(sta_paths[i], "r");
+        if (!f) continue;
         char buf[32] = {0};
         if (fgets(buf, sizeof(buf), f))
             s_charging = (strncmp(buf, "Charging", 8) == 0);
         fclose(f);
+        break;
     }
 }
 
@@ -94,24 +111,35 @@ static void update_wifi(void) {
     s_wifi_tick = now;
     s_wifi_link = -1.f;  /* reset each poll; re-set below only if interface is up */
 
+    /* Try /proc/net/wireless first (A30/generic), then sysfs carrier (Brick) */
     FILE *f = fopen("/proc/net/wireless", "r");
-    if (!f) return;
-
-    char line[256];
-    while (fgets(line, sizeof(line), f)) {
-        char *colon = strchr(line, ':');
-        if (!colon) continue;
-        /* Line: " wlan0: 0000   70.  -40.  -256 ..." */
-        int status = 0;
-        float link = 0.f;
-        if (sscanf(colon + 1, " %d %f", &status, &link) == 2) {
-            if (link < 0.f) link = 0.f;
-            if (link > 70.f) link = 70.f;
-            s_wifi_link = link;
-            break;
+    if (f) {
+        char line[256];
+        while (fgets(line, sizeof(line), f)) {
+            char *colon = strchr(line, ':');
+            if (!colon) continue;
+            /* Line: " wlan0: 0000   70.  -40.  -256 ..." */
+            int status = 0;
+            float link = 0.f;
+            if (sscanf(colon + 1, " %d %f", &status, &link) == 2) {
+                if (link < 0.f) link = 0.f;
+                if (link > 70.f) link = 70.f;
+                s_wifi_link = link;
+                break;
+            }
         }
+        fclose(f);
+        return;
     }
-    fclose(f);
+
+    /* Fallback: sysfs carrier (1=connected) — treat connected as full signal */
+    f = fopen("/sys/class/net/wlan0/carrier", "r");
+    if (f) {
+        int carrier = 0;
+        if (fscanf(f, "%d", &carrier) == 1 && carrier == 1)
+            s_wifi_link = 70.f;  /* show as connected */
+        fclose(f);
+    }
 }
 
 /* -------------------------------------------------------------------------
