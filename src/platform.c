@@ -1,5 +1,6 @@
 #include "platform.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static Platform g_platform = PLATFORM_UNKNOWN;
@@ -70,4 +71,124 @@ const char *platform_name(Platform p) {
         case PLATFORM_SMART_PRO_S: return "TrimUI Smart Pro S";
         default:                   return "Unknown";
     }
+}
+
+/* -------------------------------------------------------------------------
+ * Runtime platform globals
+ * ---------------------------------------------------------------------- */
+
+int  g_display_w        = 640;
+int  g_display_h        = 480;
+int  g_display_rotation = 0;
+int  g_panel_w          = 640;
+int  g_panel_h          = 480;
+char g_input_dev[256]   = "/dev/input/event3";
+char g_python_bin[512]  = "";
+char g_python_home[512] = "";
+char g_battery_path[256]= "";
+
+void platform_init_from_env(void) {
+    /* --- 1. Fast platform detection via GVU_PLATFORM env var --- */
+    const char *plat_str = getenv("GVU_PLATFORM");
+    if (plat_str && !g_detected) {
+        if      (!strcmp(plat_str, "Brick"))      g_platform = PLATFORM_BRICK;
+        else if (!strcmp(plat_str, "Flip"))        g_platform = PLATFORM_BRICK; /* same HW */
+        else if (!strcmp(plat_str, "A30"))         g_platform = PLATFORM_A30;
+        else if (!strcmp(plat_str, "SmartPro"))    g_platform = PLATFORM_SMART_PRO;
+        else if (!strcmp(plat_str, "SmartProS"))   g_platform = PLATFORM_SMART_PRO_S;
+        else if (!strcmp(plat_str, "MiyooMini"))   g_platform = PLATFORM_MIYOO_MINI;
+        else if (!strcmp(plat_str, "AnbernicRG28XX")  ||
+                 !strcmp(plat_str, "AnbernicRG34XXSP") ||
+                 !strcmp(plat_str, "AnbernicXX640480") ||
+                 !strcmp(plat_str, "AnbernicRGCubeXX"))
+            g_platform = PLATFORM_UNKNOWN; /* Anbernic: detect by dims */
+        if (g_platform != PLATFORM_UNKNOWN) g_detected = 1;
+    }
+    if (!g_detected) detect_platform();
+
+    /* --- 2. Platform-specific display defaults --- */
+    switch (g_platform) {
+        case PLATFORM_BRICK:
+            g_display_w = 1024; g_display_h = 768; g_display_rotation = 0;
+            break;
+        case PLATFORM_SMART_PRO:
+        case PLATFORM_SMART_PRO_S:
+            g_display_w = 1280; g_display_h = 720; g_display_rotation = 0;
+            break;
+        case PLATFORM_FLIP:
+            g_display_w = 1024; g_display_h = 768; g_display_rotation = 0;
+            break;
+        case PLATFORM_A30:
+            g_display_w = 640; g_display_h = 480; g_display_rotation = 270;
+            break;
+        case PLATFORM_MIYOO_MINI:
+        default:
+            g_display_w = 640; g_display_h = 480; g_display_rotation = 0;
+            break;
+    }
+
+    /* --- 3. Override with SpruceOS env vars if present --- */
+    const char *w   = getenv("GVU_DISPLAY_W");
+    const char *h   = getenv("GVU_DISPLAY_H");
+    const char *rot = getenv("GVU_DISPLAY_ROTATION");
+    if (w   && atoi(w)   > 0) g_display_w        = atoi(w);
+    if (h   && atoi(h)   > 0) g_display_h        = atoi(h);
+    if (rot)                   g_display_rotation = atoi(rot);
+
+    /* --- 4. Derive physical fb0 dimensions from rotation --- */
+    if (g_display_rotation != 0) {
+        /* fb0 is portrait/transposed: swap logical w/h */
+        g_panel_w = g_display_h;
+        g_panel_h = g_display_w;
+    } else {
+        g_panel_w = g_display_w;
+        g_panel_h = g_display_h;
+    }
+
+    /* --- 5. Input device --- */
+    const char *inp = getenv("GVU_INPUT_DEV");
+    if (inp && inp[0])
+        snprintf(g_input_dev, sizeof(g_input_dev), "%s", inp);
+    /* else keep default /dev/input/event3 */
+
+    /* --- 6. Battery path --- */
+    const char *bat = getenv("GVU_BATTERY_PATH");
+    if (bat && bat[0])
+        snprintf(g_battery_path, sizeof(g_battery_path), "%s", bat);
+
+    /* --- 7. Python binary --- */
+    const char *py = getenv("GVU_PYTHON");
+    if (py && py[0]) {
+        snprintf(g_python_bin, sizeof(g_python_bin), "%s", py);
+    } else {
+        /* Platform-specific fallbacks */
+        switch (g_platform) {
+            case PLATFORM_BRICK:
+            case PLATFORM_SMART_PRO:
+            case PLATFORM_SMART_PRO_S:
+            case PLATFORM_FLIP:
+                snprintf(g_python_bin, sizeof(g_python_bin),
+                         "/mnt/SDCARD/spruce/flip/bin/python3");
+                break;
+            default:
+                snprintf(g_python_bin, sizeof(g_python_bin),
+                         "/mnt/SDCARD/spruce/bin/python/bin/python3.10");
+                break;
+        }
+    }
+
+    /* --- 8. Derive PYTHONHOME as dirname(dirname(g_python_bin)) --- */
+    if (g_python_bin[0]) {
+        char tmp[512];
+        snprintf(tmp, sizeof(tmp), "%s", g_python_bin);
+        char *sl = strrchr(tmp, '/');
+        if (sl) { *sl = '\0'; sl = strrchr(tmp, '/'); if (sl) *sl = '\0'; }
+        snprintf(g_python_home, sizeof(g_python_home), "%s", tmp);
+    }
+
+    fprintf(stderr, "platform_init: %s  canvas=%dx%d  rot=%d  panel=%dx%d\n",
+            platform_name(g_platform),
+            g_display_w, g_display_h, g_display_rotation,
+            g_panel_w, g_panel_h);
+    fprintf(stderr, "  input=%s  python=%s\n", g_input_dev, g_python_bin);
 }

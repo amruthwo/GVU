@@ -56,12 +56,12 @@
  * ---------------------------------------------------------------------- */
 
 #define FB_DEVICE   "/dev/fb0"
-#define INPUT_DEV   "/dev/input/event3"
+/* Input device path: resolved at runtime from g_input_dev (set by platform_init_from_env) */
 
 static int      s_fb_fd         = -1;
 static Uint32  *s_fb_mem        = NULL;
 static size_t   s_fb_size       = 0;
-static int      s_fb_stride     = BRICK_W;  /* pixels per row */
+static int      s_fb_stride     = 0;         /* pixels per row; set by brick_screen_init */
 static int      s_fb_yoffset    = 0;        /* currently displayed page (rows) */
 static int      s_fb_back_yoff  = 0;        /* back buffer page we write to (rows) */
 /* Disable FBIOPAN_DISPLAY by default — like the A30, the ioctl blocks for a
@@ -113,9 +113,10 @@ int brick_screen_init(void) {
             vinfo.xres, vinfo.yres, vinfo.bits_per_pixel,
             s_fb_stride, s_fb_yoffset, s_fb_back_yoff);
 
-    s_input_fd = open(INPUT_DEV, O_RDONLY | O_NONBLOCK);
+    s_input_fd = open(g_input_dev, O_RDONLY | O_NONBLOCK);
     if (s_input_fd < 0)
-        perror("brick_screen_init: open " INPUT_DEV " (non-fatal)");
+        fprintf(stderr, "brick_screen_init: open %s: %s (non-fatal)\n",
+                g_input_dev, strerror(errno));
 
     return 0;
 }

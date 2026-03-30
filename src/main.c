@@ -99,16 +99,17 @@ static const char *S_PATH_ENV   = "PATH=/usr/local/bin:/usr/bin:/bin:/mnt/SDCARD
 static const char *S_SSL_ENV    = "SSL_CERT_FILE=/mnt/SDCARD/spruce/etc/ca-certificates.crt";
 static const char *S_SCRIPT     = "resources/fetch_subtitles.py";
 
-/* Platform-conditional Python paths */
+/* Python path and home: set at startup by platform_init_from_env() */
 static const char *sub_python_bin(void) {
-    return (get_platform() == PLATFORM_BRICK)
-        ? "/mnt/SDCARD/spruce/flip/bin/python3"
-        : "/mnt/SDCARD/spruce/bin/python/bin/python3.10";
+    return g_python_bin[0] ? g_python_bin : "/mnt/SDCARD/spruce/flip/bin/python3";
 }
 static const char *sub_python_env(void) {
-    return (get_platform() == PLATFORM_BRICK)
-        ? "PYTHONHOME=/mnt/SDCARD/spruce/flip"
-        : "PYTHONHOME=/mnt/SDCARD/spruce/bin/python";
+    static char buf[600];
+    if (g_python_home[0])
+        snprintf(buf, sizeof(buf), "PYTHONHOME=%s", g_python_home);
+    else
+        snprintf(buf, sizeof(buf), "PYTHONHOME=/mnt/SDCARD/spruce/flip");
+    return buf;
 }
 
 static void sub_spawn(SubWorkflow *wf, char **argv_buf) {
@@ -283,19 +284,21 @@ static int do_play(Player *player, const char *path, SDL_Renderer *renderer,
 }
 
 int main(int argc, char *argv[]) {
-#ifdef GVU_A30
-    int win_w = 640, win_h = 480;  /* A30 panel: landscape 640×480 */
-    (void)argc; (void)argv;
-#elif defined(GVU_TRIMUI_BRICK)
-    int win_w = 1024, win_h = 768; /* Brick panel: landscape 1024×768 */
-    (void)argc; (void)argv;
-#else
-    /* Optional: ./gvu [width height]  — for testing other device resolutions.
-       Supported SpruceOS resolutions: 640×480, 750×560, 1024×768, 1280×720 */
-    int win_w = 640, win_h = 480;
+    /* Read SpruceOS env vars (GVU_PLATFORM, GVU_DISPLAY_W/H/ROTATION, etc.)
+       and set all g_display_* / g_panel_* / g_input_dev / g_python_* globals.
+       Must be called before SDL_Init so that win_w/win_h are already correct. */
+    platform_init_from_env();
+
+    /* win_w/win_h: logical canvas (always landscape orientation) */
+    int win_w = g_display_w;
+    int win_h = g_display_h;
+#ifndef GVU_HW
+    /* Desktop: allow optional command-line override for testing */
     if (argc == 3) { win_w = atoi(argv[1]); win_h = atoi(argv[2]); }
     else (void)argv;
     (void)argc;
+#else
+    (void)argc; (void)argv;
 #endif
 
     signal(SIGTERM, handle_sig);
@@ -304,7 +307,7 @@ int main(int argc, char *argv[]) {
     signal(SIGCHLD, SIG_IGN);  /* auto-reap posix_spawn children (amixer) */
 #endif
 
-    printf("GVU — platform: %s\n", platform_name(detect_platform()));
+    printf("GVU — platform: %s\n", platform_name(get_platform()));
 
     config_load("gvu.conf");
     printf("Theme: %s\n", theme_get()->name);
@@ -523,7 +526,7 @@ int main(int argc, char *argv[]) {
                 audio_wake(&player.audio);
 #ifdef GVU_A30
                 a30_screen_wake();
-#else
+#elif defined(GVU_TRIMUI_BRICK)
                 brick_screen_wake();
 #endif
                 player_set_volume(&player, player.volume); /* re-sync Soft Volume Master after wake */
@@ -598,7 +601,7 @@ int main(int argc, char *argv[]) {
 
 #ifdef GVU_A30
         a30_poll_events();
-#else
+#elif defined(GVU_TRIMUI_BRICK)
         brick_poll_events();
 #endif
 #endif /* GVU_HW */
@@ -1730,7 +1733,7 @@ cleanup:
     if (hw_surf) SDL_FreeSurface(hw_surf);
 #ifdef GVU_A30
     a30_screen_close();
-#else
+#elif defined(GVU_TRIMUI_BRICK)
     brick_screen_close();
 #endif
 #else

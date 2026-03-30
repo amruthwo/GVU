@@ -14,6 +14,7 @@
 #ifdef GVU_A30
 
 #include <SDL2/SDL.h>
+#include "platform.h"
 
 /* Must be called once after SDL_Init.
    Opens /dev/fb0, mmaps the framebuffer, caches yoffset + stride.
@@ -32,9 +33,11 @@ void a30_poll_events(void);
 /* Release resources (munmap, close fds).  Call on shutdown. */
 void a30_screen_close(void);
 
-/* Size of the pre-rotated portrait OSD buffer in pixels (480×640).
+/* Size of the pre-rotated portrait OSD buffer in pixels.
+   For rotation!=0 devices (A30): g_panel_w × g_panel_h = 480 × 640.
+   For rotation==0 devices (Miyoo Mini): g_panel_w × g_panel_h = 640 × 480.
    Allocate A30_PORTRAIT_BUF_PIXELS * sizeof(Uint32) bytes for this buffer. */
-#define A30_PORTRAIT_BUF_PIXELS  (480 * 640)
+#define A30_PORTRAIT_BUF_PIXELS  ((size_t)g_panel_w * (size_t)g_panel_h)
 
 /* Pre-rotate an SDL landscape surface (640×480, ARGB8888) into a portrait
    BGRA buffer (480×640) using the same 90°CCW transform as a30_flip().

@@ -72,13 +72,27 @@ static void update_battery(void) {
     if (s_battery_pct >= 0 && now - s_battery_tick < BATTERY_INTERVAL_MS) return;
     s_battery_tick = now;
 
-    /* Try platform-specific path first, fall back to generic */
-    static const char * const cap_paths[] = {
+    /* Try GVU_BATTERY_PATH from SpruceOS env first, then known device paths */
+    const char * const cap_paths[] = {
+        g_battery_path[0] ? g_battery_path : NULL,          /* from SpruceOS env */
         "/sys/class/power_supply/axp2202-battery/capacity",  /* Trimui Brick */
         "/sys/class/power_supply/battery/capacity",          /* A30 / generic */
         NULL
     };
-    static const char * const sta_paths[] = {
+    /* Derive status path by replacing "capacity" with "status" in env path */
+    char bat_status[256] = "";
+    if (g_battery_path[0]) {
+        const char *cap = strstr(g_battery_path, "/capacity");
+        if (cap) {
+            int base = (int)(cap - g_battery_path);
+            if (base + 8 < (int)sizeof(bat_status)) {
+                memcpy(bat_status, g_battery_path, (size_t)base);
+                memcpy(bat_status + base, "/status", 8);
+            }
+        }
+    }
+    const char * const sta_paths[] = {
+        bat_status[0] ? bat_status : NULL,
         "/sys/class/power_supply/axp2202-battery/status",
         "/sys/class/power_supply/battery/status",
         NULL

@@ -6,13 +6,14 @@
  * ---------------------------------------------------------------------- */
 
 #include <SDL2/SDL.h>
+#include "platform.h"
 
-/* Panel dimensions */
-#define BRICK_W  1024
-#define BRICK_H   768
+/* Panel dimensions — resolved at runtime from g_display_w/h */
+#define BRICK_W  g_display_w
+#define BRICK_H  g_display_h
 
 /* Pre-allocated OSD buffer: one ARGB8888 pixel per panel pixel */
-#define BRICK_PORTRAIT_BUF_PIXELS  (BRICK_W * BRICK_H)
+#define BRICK_PORTRAIT_BUF_PIXELS  ((size_t)g_display_w * (size_t)g_display_h)
 
 int  brick_screen_init(void);
 void brick_screen_close(void);
