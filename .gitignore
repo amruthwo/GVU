@@ -10,3 +10,6 @@ icon.png
 
 # TMDB API key — never commit, included in release packages via package_gvu_a30.sh
 .tmdb_key
+
+# SubDL API key — never commit
+SubDL_API_*

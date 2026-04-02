@@ -8,7 +8,10 @@
  * Output format (fixed — swresample converts to this)
  * ---------------------------------------------------------------------- */
 
-#define AUDIO_OUT_RATE     48000        /* A30 ALSA native rate; avoids resampling */
+#define AUDIO_OUT_RATE     44100        /* Requested rate; a->out_rate captures actual negotiated
+                                          rate via SDL_AUDIO_ALLOW_FREQUENCY_CHANGE. 44100 avoids
+                                          dmix rate conflicts on Flip/Mini family (PyUI locks dmix
+                                          at 44100Hz; requesting 48000Hz causes EINVAL). */
 #define AUDIO_OUT_CHANNELS 2
 #define AUDIO_SDL_FORMAT   AUDIO_S16SYS  /* signed 16-bit, native endian */
 #define AUDIO_SDL_SAMPLES  4096          /* callback buffer size in frames */
@@ -55,6 +58,8 @@ typedef struct {
                                               empty output rather than real audio data */
     double             clock;       /* PTS of last decoded sample (seconds) */
     SDL_mutex         *clock_mutex;
+    int                out_rate;    /* actual SDL device sample rate (may differ from
+                                       AUDIO_OUT_RATE if device only supports 44100Hz) */
 } AudioCtx;
 
 /* Open audio codec and SDL audio device.

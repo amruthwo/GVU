@@ -177,6 +177,15 @@ void a30_flip(SDL_Surface *surface) {
                 out[c] = in[c] | 0xFF000000u;
         }
 #endif
+    } else if (g_display_rotation == 180) {
+        /* 180° rotation (upside-down panels, e.g. some Miyoo Mini variants).
+         * dst row r = src row (g_panel_h-1-r), pixels mirrored left-to-right. */
+        for (int r = 0; r < g_panel_h; r++) {
+            const Uint32 *in  = src + (size_t)(g_panel_h - 1 - r) * (size_t)pitch;
+            Uint32       *out = dst + (size_t)r * (size_t)s_fb_stride;
+            for (int c = 0; c < g_panel_w; c++)
+                out[c] = in[g_panel_w - 1 - c] | 0xFF000000u;
+        }
     } else {
         /* 90° CCW rotation (A30 and other portrait-panel devices).
          * src: g_display_w × g_display_h (landscape)
@@ -268,6 +277,14 @@ void a30_surface_to_portrait(SDL_Surface *surf, Uint32 *out) {
                 row[c] = in[c] | 0xFF000000u;
         }
 #endif
+    } else if (g_display_rotation == 180) {
+        /* 180° rotation: same as a30_flip 180° path but into heap buffer. */
+        for (int r = 0; r < g_panel_h; r++) {
+            const Uint32 *in  = src + (size_t)(g_panel_h - 1 - r) * (size_t)pitch;
+            Uint32       *row = out + (size_t)r * (size_t)g_panel_w;
+            for (int c = 0; c < g_panel_w; c++)
+                row[c] = in[g_panel_w - 1 - c] | 0xFF000000u;
+        }
     } else {
         /* 90° CCW rotation (A30): same transform as a30_flip. */
 #ifdef __ARM_NEON__

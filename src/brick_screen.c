@@ -64,10 +64,11 @@ static size_t   s_fb_size       = 0;
 static int      s_fb_stride     = 0;         /* pixels per row; set by brick_screen_init */
 static int      s_fb_yoffset    = 0;        /* currently displayed page (rows) */
 static int      s_fb_back_yoff  = 0;        /* back buffer page we write to (rows) */
-/* Disable FBIOPAN_DISPLAY by default — like the A30, the ioctl blocks for a
- * full scan period (~16ms at 60Hz), causing frame drops on 720p60 content.
- * Direct write (tearing) is preferable to dropped frames. */
-static int      s_fb_pan_disabled = 1;
+/* FBIOPAN_DISPLAY blocks ~16ms at 60Hz (one scan period) on this driver,
+ * which is acceptable for ≤30fps content.  At 60fps it caps output to ~30fps.
+ * Enable by default for tear-free output; disable at runtime if frame drops
+ * are detected on high-fps content. */
+static int      s_fb_pan_disabled = 0;
 /* Wake grace period: if pan is re-enabled, skip FBIOPAN_DISPLAY briefly. */
 static int      s_fb_wake_frames = 0;
 #define WAKE_GRACE_FRAMES 30   /* ~0.5s at 60fps */
@@ -97,6 +98,27 @@ int brick_screen_init(void) {
     }
 
     s_fb_stride = (int)(finfo.line_length / (vinfo.bits_per_pixel / 8));
+
+    /* If fb0 only has one virtual page, try expanding to two via FBIOPUT_VSCREENINFO.
+     * Some devices (e.g. Miyoo Flip, RK3566) export yres_virtual == yres by default
+     * but will accept an expand request.  We re-read finfo after the ioctl to see if
+     * smem_len actually grew — the driver may silently accept but not allocate more. */
+    {
+        size_t page_bytes = (size_t)vinfo.yres * (size_t)finfo.line_length;
+        if ((size_t)finfo.smem_len < 2 * page_bytes) {
+            vinfo.yres_virtual = vinfo.yres * 2;
+            if (ioctl(s_fb_fd, FBIOPUT_VSCREENINFO, &vinfo) == 0) {
+                ioctl(s_fb_fd, FBIOGET_FSCREENINFO, &finfo);  /* re-read smem_len */
+                fprintf(stderr, "brick_screen: expanded virtual_yres to %u, smem now %u\n",
+                        vinfo.yres_virtual, finfo.smem_len);
+            } else {
+                vinfo.yres_virtual = vinfo.yres;  /* restore — don't leave vinfo dirty */
+                fprintf(stderr, "brick_screen: FBIOPUT_VSCREENINFO failed (%s)\n",
+                        strerror(errno));
+            }
+        }
+    }
+
     s_fb_size   = (size_t)finfo.smem_len;
     s_fb_mem    = (Uint32 *)mmap(NULL, s_fb_size, PROT_READ | PROT_WRITE,
                                   MAP_SHARED, s_fb_fd, 0);
@@ -109,9 +131,25 @@ int brick_screen_init(void) {
     s_fb_yoffset   = (int)vinfo.yoffset;
     s_fb_back_yoff = (s_fb_yoffset == 0) ? BRICK_H : 0;
 
+    /* If fb0 still doesn't have room for two pages, disable double-buffering. */
+    {
+        size_t page_bytes = (size_t)vinfo.yres * (size_t)finfo.line_length;
+        if (s_fb_size < 2 * page_bytes) {
+            s_fb_pan_disabled = 1;
+            s_fb_back_yoff    = s_fb_yoffset;
+            fprintf(stderr, "brick_screen: single-page fb0 (smem=%zu < %zu), pan disabled\n",
+                    s_fb_size, 2 * page_bytes);
+        }
+    }
+
     fprintf(stderr, "brick_screen: fb0 %dx%d bpp=%d stride=%d yoff=%d back_yoff=%d\n",
             vinfo.xres, vinfo.yres, vinfo.bits_per_pixel,
             s_fb_stride, s_fb_yoffset, s_fb_back_yoff);
+
+    /* Clear fb0 to black immediately to avoid showing stale content from a
+     * previous session while GVU initialises.  Primary framebuffers treat
+     * alpha as fully opaque, so zeroing all bytes gives a black screen. */
+    memset(s_fb_mem, 0, s_fb_size);
 
     s_input_fd = open(g_input_dev, O_RDONLY | O_NONBLOCK);
     if (s_input_fd < 0)
@@ -249,6 +287,38 @@ static inline Uint32 apply_brightness(Uint32 px, int bri256) {
     return (px & 0xFF000000u) | (R << 16) | (G << 8) | B;
 }
 
+/* Alpha-blend an OSD pixel over a video pixel; returns opaque result. */
+static inline Uint32 alpha_blend(Uint32 osd, Uint8 osd_a, Uint32 vid)
+{
+    unsigned a  = osd_a;
+    unsigned a0 = 255u - a;
+    Uint32 R = ((((osd >> 16) & 0xFFu) * a + ((vid >> 16) & 0xFFu) * a0) >> 8);
+    Uint32 G = ((((osd >>  8) & 0xFFu) * a + ((vid >>  8) & 0xFFu) * a0) >> 8);
+    Uint32 B = ((( osd        & 0xFFu) * a + ( vid        & 0xFFu) * a0) >> 8);
+    return 0xFF000000u | (R << 16) | (G << 8) | B;
+}
+
+/* Returns 1 if the first row of the OSD buffer has any partial-alpha pixel. */
+static int osd_has_partial_alpha(const Uint32 *osd_bgra)
+{
+    for (int c = 0; c < BRICK_W; c++) {
+        Uint8 a = (Uint8)(osd_bgra[c] >> 24);
+        if (a != 0 && a != 0xFF) return 1;
+    }
+    return 0;
+}
+
+/* Composite OSD over video with correct partial-alpha blending + brightness. */
+static inline Uint32 composite_pixel(Uint32 osd, Uint32 vid, int bri256)
+{
+    Uint8 a = (Uint8)(osd >> 24);
+    Uint32 px;
+    if (a == 0xFF)      px = osd;
+    else if (a == 0)    px = vid | 0xFF000000u;
+    else                px = alpha_blend(osd, a, vid);
+    return apply_brightness(px, bri256);
+}
+
 void brick_flip_video(const Uint32 *osd_bgra,
                       const Uint32 *landscape_bgra,
                       int land_h, float zoom_t, float brightness) {
@@ -305,9 +375,10 @@ void brick_flip_video(const Uint32 *osd_bgra,
         }
 
         /* FIT + OSD composite */
+        int partial = osd_has_partial_alpha(osd_bgra);
 #ifdef __aarch64__
-        if (bri256 >= 256) {
-            /* Full brightness — NEON composite */
+        if (bri256 >= 256 && !partial) {
+            /* Full brightness, no partial-alpha OSD — NEON binary composite */
             const uint32x4_t alpha_mask = vdupq_n_u32(0xFF000000u);
             const uint32x4_t black_v    = vdupq_n_u32(0xFF000000u);
             for (int r = 0; r < BRICK_H; r++) {
@@ -321,7 +392,6 @@ void brick_flip_video(const Uint32 *osd_bgra,
                     uint32x4_t osd = vld1q_u32(osd_row + c);
                     uint32x4_t vid = vid_row ? vld1q_u32(vid_row + c) : black_v;
                     uint32x4_t sel = vtstq_u32(osd, alpha_mask);
-                    /* Force alpha=0xFF on OSD pixels before output */
                     vst1q_u32(out + c, vbslq_u32(sel, vorrq_u32(osd, alpha_mask), vid));
                 }
                 for (int c = neon_end; c < BRICK_W; c++) {
@@ -333,7 +403,7 @@ void brick_flip_video(const Uint32 *osd_bgra,
             brick_pageflip(); return;
         }
 #endif
-        /* FIT + OSD + brightness (scalar) */
+        /* FIT + OSD + brightness — scalar with correct partial-alpha blending */
         for (int r = 0; r < BRICK_H; r++) {
             Uint32       *out     = fb + (size_t)r * (size_t)s_fb_stride;
             const Uint32 *osd_row = osd_bgra + (size_t)r * (size_t)BRICK_W;
@@ -341,13 +411,8 @@ void brick_flip_video(const Uint32 *osd_bgra,
             const Uint32 *vid_row = in_video
                 ? landscape_bgra + (size_t)(r - row_off) * (size_t)BRICK_W : NULL;
             for (int c = 0; c < BRICK_W; c++) {
-                Uint32 ui = osd_row[c];
-                if (ui >> 24)
-                    out[c] = apply_brightness(ui | 0xFF000000u, bri256);
-                else if (vid_row)
-                    out[c] = apply_brightness(vid_row[c] | 0xFF000000u, bri256);
-                else
-                    out[c] = 0xFF000000u;
+                Uint32 vid = vid_row ? (vid_row[c] | 0xFF000000u) : 0xFF000000u;
+                out[c] = composite_pixel(osd_row[c], vid, bri256);
             }
         }
         brick_pageflip(); return;
@@ -380,22 +445,22 @@ void brick_flip_video(const Uint32 *osd_bgra,
 
         int src_col_fp = col_start_fp;
         for (int c = 0; c < BRICK_W; c++, src_col_fp += col_step_fp) {
-            Uint32 ui = osd_row ? osd_row[c] : 0u;
-            if (osd_row && (ui >> 24)) {
-                out[c] = apply_brightness(ui | 0xFF000000u, bri256);
-            } else if (vid_r0) {
+            Uint32 vid_px;
+            if (vid_r0) {
                 int sc0 = src_col_fp >> 8;
                 int uf  = src_col_fp & 0xFF;
                 int sc1 = sc0 + 1;
                 if (sc1 >= BRICK_W) sc1 = BRICK_W - 1;
-                /* Bilinear sample: horizontal then vertical lerp */
                 Uint32 top = lerp_pixel(vid_r0[sc0], vid_r0[sc1], uf);
                 Uint32 bot = lerp_pixel(vid_r1[sc0], vid_r1[sc1], uf);
-                Uint32 pix = lerp_pixel(top, bot, vf);
-                out[c] = apply_brightness(pix | 0xFF000000u, bri256);
+                vid_px = lerp_pixel(top, bot, vf) | 0xFF000000u;
             } else {
-                out[c] = 0xFF000000u;
+                vid_px = 0xFF000000u;
             }
+            if (osd_row)
+                out[c] = composite_pixel(osd_row[c], vid_px, bri256);
+            else
+                out[c] = apply_brightness(vid_px, bri256);
         }
     }
 
@@ -571,6 +636,9 @@ void brick_poll_events(void) {
 void brick_screen_close(void) {
     if (s_input_fd >= 0) { close(s_input_fd); s_input_fd = -1; }
     if (s_fb_mem && s_fb_mem != MAP_FAILED) {
+        /* Clear fb0 to black on exit so the next app doesn't see a stale
+         * GVU frame while it initialises. */
+        memset(s_fb_mem, 0, s_fb_size);
         munmap(s_fb_mem, s_fb_size);
         s_fb_mem = NULL;
     }

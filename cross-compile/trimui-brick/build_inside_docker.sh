@@ -12,6 +12,15 @@ echo "=== Compiling gvu64 ==="
 make -C /gvu trimui-brick-build
 cp /gvu/gvu64 "$BUILD/gvu64"
 
+echo "=== Compiling fetch_subs64 ==="
+aarch64-linux-gnu-gcc -Wall -std=c11 -O2 -D_POSIX_C_SOURCE=200809L \
+    -march=armv8-a \
+    $(pkg-config --cflags libcurl) \
+    -o "$BUILD/fetch_subs64" /gvu/src/fetch_subs.c \
+    $(pkg-config --static --libs libcurl) \
+    -lz -lm -static-libgcc
+echo "Built: fetch_subs64"
+
 echo "=== Collecting shared library dependencies ==="
 # Skip libs the Brick already provides natively.
 SKIP="libc.so libm.so libpthread.so libdl.so librt.so libgcc_s.so ld-linux"

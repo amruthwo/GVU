@@ -1,4 +1,5 @@
 #include "video.h"
+#include "platform.h"
 #include <stdio.h>
 #include <time.h>
 #include <string.h>
@@ -432,10 +433,10 @@ int video_open(VideoCtx *v, AVCodecParameters *cp, AVRational time_base,
        can blit it directly to fb0 via brick_flip_video() without going through
        the SDL texture upload + software render path (landscape_direct). */
     {
-        SDL_Rect fit = video_fit_rect(cp->width, cp->height, 1024, 768);
+        SDL_Rect fit = video_fit_rect(cp->width, cp->height, g_display_w, g_display_h);
         v->tex_w = fit.w;
         v->tex_h = fit.h;
-        if (fit.w == 1024)
+        if (fit.w == g_display_w)
             v->landscape_direct = 1;
     }
 #else

@@ -77,7 +77,8 @@ typedef struct {
     int       result_count;
     int       result_sel;
     int       result_scroll;
-    int       lang_sel;      /* selected row in language picker */
+    int       lang_sel;         /* selected row in language picker */
+    Uint32    result_ready_tick; /* SDL_GetTicks() when SUB_RESULTS was entered */
 } SubWorkflow;
 
 /* Build the .srt path for a video path (replaces extension with .srt). */
@@ -95,28 +96,51 @@ static void make_srt_dest(const char *video_path, char *buf, int buf_sz) {
     snprintf(buf, buf_sz, "%s.srt", video_path);
 }
 
-static const char *S_PATH_ENV   = "PATH=/usr/local/bin:/usr/bin:/bin:/mnt/SDCARD/spruce/bin";
-static const char *S_SSL_ENV    = "SSL_CERT_FILE=/mnt/SDCARD/spruce/etc/ca-certificates.crt";
-static const char *S_SCRIPT     = "resources/fetch_subtitles.py";
+static const char *S_PATH_ENV = "PATH=/usr/local/bin:/usr/bin:/bin:/mnt/SDCARD/spruce/bin";
 
-/* Python path and home: set at startup by platform_init_from_env() */
-static const char *sub_python_bin(void) {
-    return g_python_bin[0] ? g_python_bin : "/mnt/SDCARD/spruce/flip/bin/python3";
+/* Absolute path to fetch_subs binary, derived from g_app_dir at runtime.
+   gvu32 (GVU_A30)          → $APP_DIR/bin32/fetch_subs
+   gvu64 (GVU_TRIMUI_BRICK) → $APP_DIR/bin64/fetch_subs  */
+static const char *fetch_subs_bin(void) {
+    static char path[512];
+#ifdef GVU_A30
+    snprintf(path, sizeof(path), "%s/bin32/fetch_subs",
+             g_app_dir[0] ? g_app_dir : ".");
+#else
+    snprintf(path, sizeof(path), "%s/bin64/fetch_subs",
+             g_app_dir[0] ? g_app_dir : ".");
+#endif
+    return path;
 }
-static const char *sub_python_env(void) {
-    static char buf[600];
-    if (g_python_home[0])
-        snprintf(buf, sizeof(buf), "PYTHONHOME=%s", g_python_home);
+
+/* GVU_CACERT_PATH env to pass through to fetch_subs (inherited from launch.sh) */
+static const char *sub_cacert_env(void) {
+    static char buf[512];
+    const char *ca = getenv("GVU_CACERT_PATH");
+    if (ca && ca[0])
+        snprintf(buf, sizeof(buf), "GVU_CACERT_PATH=%s", ca);
     else
-        snprintf(buf, sizeof(buf), "PYTHONHOME=/mnt/SDCARD/spruce/flip");
+        snprintf(buf, sizeof(buf), "GVU_CACERT_PATH=");
+    return buf;
+}
+
+/* Pass LD_LIBRARY_PATH through so fetch_subs can find libz.so.1 from lib32/lib64 */
+static const char *sub_ldlib_env(void) {
+    static char buf[1024];
+    const char *ld = getenv("LD_LIBRARY_PATH");
+    if (ld && ld[0])
+        snprintf(buf, sizeof(buf), "LD_LIBRARY_PATH=%s", ld);
+    else
+        snprintf(buf, sizeof(buf), "LD_LIBRARY_PATH=");
     return buf;
 }
 
 static void sub_spawn(SubWorkflow *wf, char **argv_buf) {
     unlink(SUB_DONE_FILE);
     unlink(SUB_RESULTS_FILE);
-    const char *pyenv = sub_python_env();
-    char *env_buf[] = { (char *)pyenv, (char *)S_PATH_ENV, (char *)S_SSL_ENV, NULL };
+    const char *caenv = sub_cacert_env();
+    const char *ldenv = sub_ldlib_env();
+    char *env_buf[] = { (char *)caenv, (char *)ldenv, (char *)S_PATH_ENV, NULL };
     int logfd = open(SUB_LOG_FILE, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     posix_spawn_file_actions_t fa;
     posix_spawn_file_actions_init(&fa);
@@ -125,8 +149,11 @@ static void sub_spawn(SubWorkflow *wf, char **argv_buf) {
         posix_spawn_file_actions_adddup2(&fa, logfd, STDERR_FILENO);
         posix_spawn_file_actions_addclose(&fa, logfd);
     }
-    if (posix_spawn(&wf->child_pid, sub_python_bin(), &fa, NULL, argv_buf, env_buf) != 0) {
-        perror("posix_spawn subtitle");
+    if (posix_spawn(&wf->child_pid, fetch_subs_bin(), &fa, NULL, argv_buf, env_buf) != 0) {
+        perror("posix_spawn fetch_subs");
+        /* Write error sentinel immediately so the UI doesn't get stuck */
+        FILE *df = fopen(SUB_DONE_FILE, "w");
+        if (df) { fprintf(df, "error: fetch_subs not found\n"); fclose(df); }
         wf->child_pid = 0;
     }
     posix_spawn_file_actions_destroy(&fa);
@@ -135,7 +162,7 @@ static void sub_spawn(SubWorkflow *wf, char **argv_buf) {
 
 static void sub_start_search(SubWorkflow *wf) {
     char *argv_buf[] = {
-        (char *)sub_python_bin(), (char *)S_SCRIPT, "search",
+        (char *)fetch_subs_bin(), "search",
         wf->video_path,
         (char *)config_subdl_key(),
         (char *)config_sub_lang(),
@@ -148,7 +175,7 @@ static void sub_start_search(SubWorkflow *wf) {
 static void sub_start_download(SubWorkflow *wf) {
     SubResult *sr = &wf->results[wf->result_sel];
     char *argv_buf[] = {
-        (char *)sub_python_bin(), (char *)S_SCRIPT, "download",
+        (char *)fetch_subs_bin(), "download",
         sr->provider, sr->download_key, wf->srt_dest,
         NULL
     };
@@ -703,7 +730,9 @@ int main(int argc, char *argv[]) {
                             if (sub_wf.result_sel >= sub_wf.result_scroll + max_vis)
                                 sub_wf.result_scroll = sub_wf.result_sel - max_vis + 1;
                         } else if ((sk == SDLK_SPACE || sk == SDLK_RETURN) &&
-                                   sub_wf.result_count > 0) {
+                                   sub_wf.result_count > 0 &&
+                                   !ev.key.repeat &&
+                                   SDL_GetTicks() - sub_wf.result_ready_tick > 300) {
                             sub_start_download(&sub_wf);
                         } else if (sk == SDLK_LCTRL || sk == SDLK_BACKSPACE) {
                             sub_wf.state = SUB_NONE;
@@ -1375,7 +1404,8 @@ int main(int argc, char *argv[]) {
                         }
                         fclose(rf);
                     }
-                    sub_wf.state = SUB_RESULTS; /* show list even if count==0 */
+                    sub_wf.state = SUB_RESULTS;
+                    sub_wf.result_ready_tick = SDL_GetTicks(); /* debounce confirm */
                 } else {
                     fprintf(stderr, "subtitle search: %s\n", done_msg);
                     sub_wf.state = SUB_NONE;
@@ -1642,7 +1672,8 @@ int main(int argc, char *argv[]) {
                       || player.wake_osd_visible
                       || player.state == PLAYER_PAUSED
                       || player.subtitle.count > 0
-                      || player.brightness < 0.999f;
+                      || player.brightness < 0.999f
+                      || sub_wf.state != SUB_NONE;
             osd_frame_cnt++;
             const Uint32 *osd_ptr = NULL;
             if (has_ui && osd_portrait_buf) {
@@ -1677,7 +1708,8 @@ int main(int argc, char *argv[]) {
                       || player.wake_osd_visible
                       || player.state == PLAYER_PAUSED
                       || player.subtitle.count > 0
-                      || player.brightness < 0.999f;
+                      || player.brightness < 0.999f
+                      || sub_wf.state != SUB_NONE;
             osd_frame_cnt++;
             const Uint32 *osd_ptr = NULL;
             if (has_ui && osd_landscape_buf) {

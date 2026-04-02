@@ -77,7 +77,8 @@ GVU_BRICK_DEPLOY ?= spruce@192.168.1.45
 GVU_BRICK_PATH   ?= /mnt/SDCARD/App/GVU
 
 .PHONY: all clean test miyoo-a30-build miyoo-a30-docker miyoo-a30-package miyoo-a30-deploy \
-        trimui-brick-build trimui-brick-docker trimui-brick-package trimui-brick-deploy
+        trimui-brick-build trimui-brick-docker trimui-brick-package trimui-brick-deploy \
+        fetch-subs-a30-build fetch-subs-brick-build
 
 all: $(TARGET)
 
@@ -162,6 +163,29 @@ trimui-brick-deploy: build/gvu64
 	ssh $(GVU_BRICK_DEPLOY) "chmod +x $(GVU_BRICK_PATH)/launch.sh $(GVU_BRICK_PATH)/gvu64 $(GVU_BRICK_PATH)/resources/scrape_covers.sh $(GVU_BRICK_PATH)/resources/clear_covers.sh"
 	@echo "Deployed to $(GVU_BRICK_DEPLOY):$(GVU_BRICK_PATH)"
 
+# ---- fetch_subs targets (run inside Docker) ----------------------------------
+
+# Cross-compile fetch_subs32 (armhf) — must run inside miyoo-a30 Docker image
+fetch-subs-a30-build: src/fetch_subs.c
+	$(A30_CC) -Wall -std=c11 -O2 -D_POSIX_C_SOURCE=200809L \
+	    -march=armv7-a -mfpu=neon-vfpv3 -mfloat-abi=hard \
+	    $$(pkg-config --cflags libcurl) \
+	    -o build/fetch_subs32 $< \
+	    $$(pkg-config --static --libs libcurl) \
+	    -lz -lm -static-libgcc
+	@echo "Built: build/fetch_subs32"
+
+# Cross-compile fetch_subs64 (aarch64) — must run inside trimui-brick Docker image
+fetch-subs-brick-build: src/fetch_subs.c
+	$(BRICK_CC) -Wall -std=c11 -O2 -D_POSIX_C_SOURCE=200809L \
+	    -march=armv8-a \
+	    $$(pkg-config --cflags libcurl) \
+	    -o build/fetch_subs64 $< \
+	    $$(pkg-config --static --libs libcurl) \
+	    -lz -lm -static-libgcc
+	@echo "Built: build/fetch_subs64"
+
 clean:
 	rm -f $(TARGET) $(A30_TARGET) $(BRICK_TARGET)
 	rm -rf build/gvu32 build/libs32 build/gvu64 build/libs64
+	rm -f build/fetch_subs32 build/fetch_subs64

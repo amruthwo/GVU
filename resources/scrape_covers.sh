@@ -80,7 +80,7 @@ show_id=""
 if [ -n "$TMDB_KEY" ]; then
     echo "Trying TMDB..."
     url="${TMDB_SEARCH}?api_key=${TMDB_KEY}&query=${query}&page=1"
-    if wget -q -O "$tmpfile" "$url" 2>/dev/null; then
+    if wget -q --no-check-certificate -T 10 -O "$tmpfile" "$url" 2>/dev/null; then
         # Split on commas so each JSON field is on its own line, then extract
         # the first "poster_path" value (skips "null" entries).
         poster=$(tr ',' '\n' < "$tmpfile" \
@@ -105,7 +105,7 @@ fi
 # -------------------------------------------------------------------------
 echo "Querying TVMaze..."
 url="${TVMAZE_SEARCH}?q=${query}"
-if wget -q -O "$tmpfile" "$url" 2>/dev/null; then
+if wget -q --no-check-certificate -T 10 -O "$tmpfile" "$url" 2>/dev/null; then
     # Extract show ID for season artwork lookup
     show_id=$(tr ',' '\n' < "$tmpfile" \
               | grep '"id"' | head -1 \
@@ -122,7 +122,7 @@ if wget -q -O "$tmpfile" "$url" 2>/dev/null; then
         if [ -n "$season_num" ] && [ -n "$show_id" ]; then
             echo "TVMaze: fetching season $season_num artwork for show $show_id"
             seas_url="http://api.tvmaze.com/shows/${show_id}/seasons"
-            if wget -q -O "$tmpfile" "$seas_url" 2>/dev/null; then
+            if wget -q --no-check-certificate -T 10 -O "$tmpfile" "$seas_url" 2>/dev/null; then
                 # Anchor to $ because after tr each field ends at EOL (no trailing chars).
                 # grep -A 20: "number" and "original" are ~13 comma-separated fields apart.
                 orig=$(tr ',' '\n' < "$tmpfile" \
@@ -163,7 +163,7 @@ fi
 
 echo "Downloading: $cover_url"
 dest="${FOLDER}/cover.jpg"
-if wget -q -O "$tmpimg" "$cover_url" 2>/dev/null; then
+if wget -q --no-check-certificate -T 10 -O "$tmpimg" "$cover_url" 2>/dev/null; then
     mv "$tmpimg" "$dest"
     echo "Saved: $dest"
     # Signal GVU now so the overlay dismisses while season covers scrape
@@ -177,7 +177,7 @@ if wget -q -O "$tmpimg" "$cover_url" 2>/dev/null; then
     if [ -z "$season_num" ] && [ -n "$show_id" ]; then
         echo "Fetching season artwork for show $show_id..."
         seas_url="http://api.tvmaze.com/shows/${show_id}/seasons"
-        if wget -q -O "$tmpseasons" "$seas_url" 2>/dev/null; then
+        if wget -q --no-check-certificate -T 10 -O "$tmpseasons" "$seas_url" 2>/dev/null; then
             for subdir in "$FOLDER"/*/; do
                 [ -d "$subdir" ] || continue
                 subname=$(basename "${subdir%/}")
@@ -206,7 +206,7 @@ if wget -q -O "$tmpimg" "$cover_url" 2>/dev/null; then
                     continue
                 fi
                 echo "Season $snum: downloading $orig"
-                if wget -q -O "$tmpimg" "$orig" 2>/dev/null; then
+                if wget -q --no-check-certificate -T 10 -O "$tmpimg" "$orig" 2>/dev/null; then
                     mv "$tmpimg" "${subdir}cover.jpg"
                     echo "Season $snum: saved ${subdir}cover.jpg"
                 else

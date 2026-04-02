@@ -38,6 +38,7 @@ extern char g_input_dev[256];
 extern char g_python_bin[512];
 extern char g_python_home[512];
 extern char g_battery_path[256];
+extern char g_app_dir[512];     /* absolute path to app directory (dirname of dirname of exe) */
 
 /* Call once at startup, before any screen_init(). */
 void platform_init_from_env(void);

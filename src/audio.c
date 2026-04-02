@@ -190,7 +190,7 @@ static int audio_decode_thread(void *userdata) {
                 if (frm->pts != AV_NOPTS_VALUE) {
                     double pts = (double)frm->pts *
                                  av_q2d(a->codec_ctx->pkt_timebase) +
-                                 (double)converted / AUDIO_OUT_RATE;
+                                 (double)converted / a->out_rate;
                     SDL_LockMutex(a->clock_mutex);
                     a->clock = pts;
                     SDL_UnlockMutex(a->clock_mutex);
@@ -235,30 +235,17 @@ int audio_open(AudioCtx *a, AVCodecParameters *codec_params,
         return -1;
     }
 
-    /* Set up swresample: input = file's format, output = S16 stereo 44100 */
-    AVChannelLayout out_layout;
-    av_channel_layout_default(&out_layout, AUDIO_OUT_CHANNELS);
-
-    ret = swr_alloc_set_opts2(&a->swr,
-                              &out_layout,           AV_SAMPLE_FMT_S16, AUDIO_OUT_RATE,
-                              &codec_params->ch_layout,
-                              (enum AVSampleFormat)codec_params->format,
-                              codec_params->sample_rate,
-                              0, NULL);
-    av_channel_layout_uninit(&out_layout);
-    if (ret < 0 || swr_init(a->swr) < 0) {
-        if (errbuf) snprintf(errbuf, (size_t)errbuf_sz, "swr_init failed");
+    /* Ring buffer */
+    if (ring_init(&a->ring) < 0) {
+        if (errbuf) snprintf(errbuf, (size_t)errbuf_sz, "ring buffer alloc failed");
         avcodec_free_context(&a->codec_ctx);
         return -1;
     }
 
-    /* Ring buffer */
-    if (ring_init(&a->ring) < 0) {
-        if (errbuf) snprintf(errbuf, (size_t)errbuf_sz, "ring buffer alloc failed");
-        return -1;
-    }
-
-    /* SDL audio device */
+    /* SDL audio device — open first to discover the actual negotiated rate.
+     * Allow frequency change so devices that only support 44100Hz (e.g.
+     * Allwinner V3s on Miyoo Mini/Flip) don't fail with "Couldn't set
+     * audio frequency". */
     SDL_AudioSpec want = {
         .freq     = AUDIO_OUT_RATE,
         .format   = AUDIO_SDL_FORMAT,
@@ -268,10 +255,31 @@ int audio_open(AudioCtx *a, AVCodecParameters *codec_params,
         .userdata = a,
     };
     SDL_AudioSpec got;
-    a->dev = SDL_OpenAudioDevice(NULL, 0, &want, &got, 0);
+    a->dev = SDL_OpenAudioDevice(NULL, 0, &want, &got,
+                                 SDL_AUDIO_ALLOW_FREQUENCY_CHANGE);
     if (a->dev == 0) {
         if (errbuf) snprintf(errbuf, (size_t)errbuf_sz,
                              "SDL_OpenAudioDevice: %s", SDL_GetError());
+        ring_destroy(&a->ring);
+        avcodec_free_context(&a->codec_ctx);
+        return -1;
+    }
+    a->out_rate = got.freq;
+
+    /* Set up swresample: input = file's format, output = S16 stereo at got.freq */
+    AVChannelLayout out_layout;
+    av_channel_layout_default(&out_layout, AUDIO_OUT_CHANNELS);
+
+    ret = swr_alloc_set_opts2(&a->swr,
+                              &out_layout,           AV_SAMPLE_FMT_S16, a->out_rate,
+                              &codec_params->ch_layout,
+                              (enum AVSampleFormat)codec_params->format,
+                              codec_params->sample_rate,
+                              0, NULL);
+    av_channel_layout_uninit(&out_layout);
+    if (ret < 0 || swr_init(a->swr) < 0) {
+        if (errbuf) snprintf(errbuf, (size_t)errbuf_sz, "swr_init failed");
+        SDL_CloseAudioDevice(a->dev); a->dev = 0;
         ring_destroy(&a->ring);
         avcodec_free_context(&a->codec_ctx);
         return -1;
@@ -355,7 +363,7 @@ int audio_switch_stream(AudioCtx *a, PacketQueue *pkt_queue,
     AVChannelLayout out_layout;
     av_channel_layout_default(&out_layout, AUDIO_OUT_CHANNELS);
     ret = swr_alloc_set_opts2(&a->swr,
-                              &out_layout,           AV_SAMPLE_FMT_S16, AUDIO_OUT_RATE,
+                              &out_layout,           AV_SAMPLE_FMT_S16, a->out_rate,
                               &cp->ch_layout,
                               (enum AVSampleFormat)cp->format,
                               cp->sample_rate, 0, NULL);
@@ -372,7 +380,7 @@ int audio_switch_stream(AudioCtx *a, PacketQueue *pkt_queue,
        jumps forward by ~ring_delay seconds on the next call (ring suddenly
        empty) and video sync scrambles to catch up for several seconds. */
     SDL_LockMutex(a->ring.mutex);
-    double bytes_per_sec = AUDIO_OUT_RATE * AUDIO_OUT_CHANNELS * 2.0;
+    double bytes_per_sec = a->out_rate * AUDIO_OUT_CHANNELS * 2.0;
     double ring_delay    = a->ring.filled / bytes_per_sec;
     a->ring.filled = a->ring.read_pos = a->ring.write_pos = 0;
     SDL_CondSignal(a->ring.not_full);
@@ -402,7 +410,7 @@ int audio_switch_stream(AudioCtx *a, PacketQueue *pkt_queue,
 void audio_wake(AudioCtx *a) {
     if (!a->dev) return;
 
-    double bps = AUDIO_OUT_RATE * AUDIO_OUT_CHANNELS * 2.0;
+    double bps = a->out_rate * AUDIO_OUT_CHANNELS * 2.0;
 
     SDL_LockMutex(a->ring.mutex);
     fprintf(stderr, "audio_wake: (clock=%.3f ring_delay=%.3fs)\n",
@@ -421,7 +429,7 @@ void audio_wake(AudioCtx *a) {
     fprintf(stderr, "audio_wake: ring + queue cleared\n");
 
     SDL_AudioSpec want = {
-        .freq     = AUDIO_OUT_RATE,
+        .freq     = a->out_rate,
         .format   = AUDIO_SDL_FORMAT,
         .channels = AUDIO_OUT_CHANNELS,
         .samples  = AUDIO_SDL_SAMPLES,
@@ -429,9 +437,12 @@ void audio_wake(AudioCtx *a) {
         .userdata = a,
     };
     SDL_AudioSpec got;
-    a->dev = SDL_OpenAudioDevice(NULL, 0, &want, &got, 0);
+    a->dev = SDL_OpenAudioDevice(NULL, 0, &want, &got,
+                                 SDL_AUDIO_ALLOW_FREQUENCY_CHANGE);
     if (!a->dev)
         fprintf(stderr, "audio_wake: SDL_OpenAudioDevice failed: %s\n", SDL_GetError());
+    else
+        a->out_rate = got.freq;
 
 #ifdef GVU_A30
     {
@@ -463,9 +474,9 @@ double audio_get_clock(const AudioCtx *a) {
     int buffered_bytes = a->ring.filled;
     SDL_UnlockMutex(a->ring.mutex);
 
-    double bytes_per_sec = AUDIO_OUT_RATE * AUDIO_OUT_CHANNELS * 2.0; /* S16 */
+    double bytes_per_sec = a->out_rate * AUDIO_OUT_CHANNELS * 2.0; /* S16 */
     double ring_delay    = buffered_bytes / bytes_per_sec;
-    double sdl_delay     = (double)AUDIO_SDL_SAMPLES / AUDIO_OUT_RATE;
+    double sdl_delay     = (double)AUDIO_SDL_SAMPLES / a->out_rate;
 
     double actual = c - ring_delay - sdl_delay;
     return actual > 0.0 ? actual : 0.0;

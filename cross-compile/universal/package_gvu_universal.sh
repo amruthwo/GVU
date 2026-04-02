@@ -30,7 +30,10 @@ mkdir -p "$STAGE/GVU/resources"
 # Binaries
 cp "$REPO_ROOT/build/gvu32"  "$STAGE/GVU/bin32/gvu"
 cp "$REPO_ROOT/build/gvu64"  "$STAGE/GVU/bin64/gvu"
-chmod +x "$STAGE/GVU/bin32/gvu" "$STAGE/GVU/bin64/gvu"
+cp "$REPO_ROOT/build/fetch_subs32" "$STAGE/GVU/bin32/fetch_subs"
+cp "$REPO_ROOT/build/fetch_subs64" "$STAGE/GVU/bin64/fetch_subs"
+chmod +x "$STAGE/GVU/bin32/gvu" "$STAGE/GVU/bin64/gvu" \
+         "$STAGE/GVU/bin32/fetch_subs" "$STAGE/GVU/bin64/fetch_subs"
 
 # Shared libraries
 if [ -d "$REPO_ROOT/build/libs32" ]; then

@@ -202,11 +202,21 @@ Deployed to Brick, A30, Miyoo Flip, Miyoo Mini Flip (V4 screen), Miyoo Mini V3.
 - Audio error: "ALSA: Couldn't open audio device"
 - R1/L1 swapped with R2/L2
 
-**Miyoo Flip (aarch64, gvu64):**
-- Audio error: "SDL_OpenAudioDevice: Couldn't set audio frequency" — ALSA sample rate mismatch
-- Everything else (display, input, wifi, battery) working correctly
+**Miyoo Flip (aarch64, gvu64) — Session 2026-04-01:**
+- fb0: 640×480, single page (virtual_yres=480=yres, smem_len=1.2MB). No double-buffering without FBIOPUT_VSCREENINFO.
+- `brick_screen_init`: crash (SIGSEGV) — back_yoff=480 wrote one page past end of mmap. Fix: detect smem < 2×page_bytes → s_fb_pan_disabled=1, back_yoff=yoffset.
+- Audio: PyUI (MainUI) holds /dev/snd/pcmC0D0p open exclusively (not via dmix) at 44100Hz S16_LE. Neither ALSA default nor OSS /dev/dsp accessible while PyUI runs.
+  - Root cause chain: gvu64 SDL2 had NO ALSA compiled in (libasound2-dev missing from Dockerfile) → OSS only → /dev/dsp locked by PyUI → SNDCTL_DSP_SPEED EINVAL.
+  - Fix 1: Add `libasound2-dev` to Dockerfile.gvu (Brick), rebuild SDL2 → ALSA now in gvu64.
+  - Fix 2: `launch.sh` writes `HOME=/tmp/gvu_home/.asoundrc` mapping default→plughw:0,0 → SDL ALSA opens hw:0,0 directly, bypassing dmix lock.
+  - Fix 3: `AUDIO_OUT_RATE` changed 48000→44100 (not strictly needed with plughw, but correct).
+- Video scrambled/tiled: `video.c` #elif GVU_TRIMUI_BRICK used hardcoded `video_fit_rect(..., 1024, 768)` — fit rect wrong for 640×480 display, sws_scale output 1024px wide into 640px buffer. Fix: use `g_display_w / g_display_h`.
+- landscape_direct threshold also used hardcoded `fit.w == 1024` → fixed to `fit.w == g_display_w`.
+- **Status (2026-04-01)**: display ✓, input ✓, audio ✓, video ✓. Tearing (single-page fb0, no double-buffering). Stale image on startup (pending fix).
 
 **Brick, A30:** Working well. All major features functional.
+
+**Note on gvu64 Brick Docker image**: Rebuilt 2026-04-01 to add libasound2-dev. SDL2 now has ALSA compiled in. Brick audio now uses ALSA (plughw:0,0 via .asoundrc) instead of OSS — untested on Brick with new binary.
 
 ---
 
@@ -328,10 +338,129 @@ Fully self-contained. No Python, no SpruceOS scripts, no external tools.
 `launch.sh` uses `uname -m` to select arch (no `$PLATFORM` vars available on MinUI/NextUI).
 
 ### Implementation Order (fetch_subs, ~2-3 sessions)
-1. Add mbedTLS + libcurl to both Dockerfiles, verify build
-2. Vendor `jsmn.h` and `miniz.h` into `src/`
-3. Implement `fetch_subs.c`: HTTP helpers → filename parser → SubDL → Podnapisi → zip extractor
-4. Wire into Makefile, test `fetch_subs64` on Brick
-5. Test `fetch_subs32` on A30
-6. Update `main.c` to use `fetch_subs` binary instead of Python script
-7. MinUI/NextUI pak launcher script
+1. ✓ Add mbedTLS + libcurl to both Dockerfiles, verify build
+2. ✓ Implement `fetch_subs.c` (no vendored JSON/ZIP libs — hand-rolled; uses system zlib for inflate)
+3. ✓ Wire into Makefile, built `fetch_subs64` on Brick
+4. Deployed to Brick 2026-03-30: **search returns "no subtitles found"** — debugging needed (see Part 3)
+5. Test `fetch_subs32` on A30 — NOT YET DONE
+6. ✓ Update `main.c` to call `fetch_subs` binary (no Python)
+7. MinUI/NextUI pak launcher script — future
+
+---
+
+## Part 3: Session 2026-03-31 — Bugs Found and Fixed
+
+All four bugs from the 2026-03-30 debug plan were resolved. Three additional bugs were found and
+fixed during subtitle overlay testing.
+
+---
+
+### fetch_subs: "no subtitles found" — FIXED ✓
+
+**Root cause**: mbedTLS 3.5.2 CA bundle loading was broken in the cross-compiled Brick build.
+Both `CURLOPT_CAINFO` (file path) and `CURLOPT_CAINFO_BLOB` (in-memory) returned curl error 77
+(`CURLE_SSL_CACERT_BADFILE`). Disabling SSL verify (`CURLOPT_SSL_VERIFYPEER=0`) confirmed the
+JSON parser was correct — SubDL returned 5 results once TLS was bypassed.
+
+**Fix**: Replaced mbedTLS 3.5.2 with OpenSSL 1.1.1w as the libcurl TLS backend in
+`cross-compile/trimui-brick/Dockerfile.gvu`. OpenSSL builds reliably and libcurl's
+`--with-ca-bundle` points directly to the device CA path. Docker image rebuilt from scratch.
+
+**Additional fix**: SubDL API key was missing from `gvu.conf` (user had not yet configured it).
+Key is stored in `~/Projects/GVU/gvu/SubDL_API_(Don't Upload).txt` (gitignored).
+
+**Status**: SubDL returns results ✓. Podnapisi is currently DOWN (service outage, not a code
+issue); 8s `CURLOPT_CONNECTTIMEOUT` limits the wait.
+
+**Remaining**: A30 Dockerfile still uses mbedTLS 3.5.2 — same OpenSSL switch needed.
+`fetch_subs32` not yet rebuilt or tested on A30.
+
+---
+
+### scrape_covers.sh: cover art not fetching — FIXED ✓
+
+Added `--no-check-certificate -T 10` to all `wget` calls in `scrape_covers.sh`. Confirmed
+working on Brick: cover art fetches and displays correctly.
+
+---
+
+### Icon + default cover not matching theme — FIXED ✓
+
+Both issues were resolved in the same session by deploying theme-matched SVG assets. Icon and
+default cover now respect the configured theme (e.g., vampire). No code changes needed —
+asset deployment was the fix.
+
+---
+
+### New bugs found during subtitle overlay testing
+
+#### 1. Subtitle overlay alpha blending — FIXED ✓
+
+**Symptom**: When subtitle search results appeared over a playing video, the video went
+completely black instead of showing through the dim layer.
+
+**Root cause**: `brick_flip_video()` composited the OSD using `if (alpha > 0) → opaque`. The
+`draw_dim()` call sets alpha=170 (semi-transparent grey), which was treated as fully opaque
+solid black.
+
+**Fix** (`src/brick_screen.c`): Added three helpers after `apply_brightness()`:
+- `alpha_blend(osd, osd_a, vid)` — per-channel blend using integer math
+- `osd_has_partial_alpha(osd_bgra)` — scans a row for any partial-alpha pixel
+- `composite_pixel(osd, vid, bri256)` — dispatches: α=255 → opaque, α=0 → video, else blend
+
+NEON fast path now requires `bri256 >= 256 && !partial`; scalar path calls `composite_pixel`.
+Same treatment applied to zoom path.
+
+#### 2. Subtitle results disappearing immediately — FIXED ✓
+
+**Symptom**: The subtitle results panel appeared but vanished before the user could select
+anything.
+
+**Root cause**: Key repeat events from holding START would fire SDLK_RETURN with `ev.key.repeat
+!= 0`. The moment `SUB_RESULTS` state became active, a pending repeat triggered
+`sub_start_download()` immediately, dismissing the panel.
+
+**Fix** (`src/main.c`): Added `result_ready_tick` to `SubWorkflow` struct. Set when entering
+`SUB_RESULTS`. Confirm action gated by: `&& !ev.key.repeat && SDL_GetTicks() -
+sub_wf.result_ready_tick > 300`.
+
+#### 3. Subtitle overlay invisible on first search (no pre-existing subtitle) — FIXED ✓
+
+**Symptom**: Pressing START with no pre-existing subtitle showed no UI. If the user pressed
+START or A blind, a download would actually trigger — the overlay was rendering but not
+being composited over the video.
+
+**Root cause**: `has_ui` in both A30 and Brick rendering paths was missing
+`sub_wf.state != SUB_NONE`. When the subtitle workflow was active but no subtitle was loaded,
+`has_ui` evaluated false and the OSD surface was never blended over the video.
+
+**Fix** (`src/main.c`): Added `|| sub_wf.state != SUB_NONE` to the `has_ui` expression in
+both the A30 (`#ifdef GVU_A30`) and Brick (`#ifdef GVU_BRICK`) rendering paths.
+
+---
+
+### Remaining work
+
+- **Video tearing (Brick) — FIXED ✓**: Re-enabled `FBIOPAN_DISPLAY` double-buffering on
+  Brick (`s_fb_pan_disabled = 0`). Was disabled due to fear of ~16ms vsync block causing
+  frame drops, but in practice the decode pipeline fills that wait — no dropped frames at
+  25fps or 60fps. `FBIO_WAITFORVSYNC` was tried first but had no effect (driver likely
+  doesn't support it).
+- **Video tearing (A30)**: Same `s_fb_pan_disabled` flag exists. A30 comment warns of ~28ms
+  block (vs Brick's ~16ms). At 25fps (40ms budget) it should be fine; 60fps is risky.
+  Test by setting `s_fb_pan_disabled = 0` in `a30_screen.c` — rebuild A30 image first
+  (needs OpenSSL switch anyway).
+- **A30 fetch_subs**: ✓ Dockerfile switched to OpenSSL 1.1.1w; Docker image rebuilt; `fetch_subs32`
+  and `gvu32` built. Deploy pending (A30 offline at time of build):
+  ```sh
+  sftp spruce@192.168.1.62
+  put build/gvu32 /mnt/SDCARD/App/GVU/bin32/gvu
+  put build/fetch_subs32 /mnt/SDCARD/App/GVU/bin32/fetch_subs
+  ```
+- **Miyoo Mini family**: 180° rotation, 752×560 resolution (Flip/V4), ALSA audio failure,
+  L1/R1 ↔ L2/R2 swap — not addressed.
+- **Miyoo Flip tearing**: fb0 has only 1 page (virtual_yres=yres). Try FBIOPUT_VSCREENINFO
+  to expand to 2 pages at init — if RK3566 driver accepts it, enables FBIOPAN_DISPLAY double-
+  buffering. Safe to try (not the sunxi overlay that breaks on A30).
+- **Stale image on Flip startup**: brief flash of previous session's fb0 content before first
+  GVU paint. Investigate and fix.

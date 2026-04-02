@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 static Platform g_platform = PLATFORM_UNKNOWN;
 static int      g_detected  = 0;
@@ -86,6 +87,7 @@ char g_input_dev[256]   = "/dev/input/event3";
 char g_python_bin[512]  = "";
 char g_python_home[512] = "";
 char g_battery_path[256]= "";
+char g_app_dir[512]     = "";
 
 void platform_init_from_env(void) {
     /* --- 1. Fast platform detection via GVU_PLATFORM env var --- */
@@ -136,11 +138,12 @@ void platform_init_from_env(void) {
     if (rot)                   g_display_rotation = atoi(rot);
 
     /* --- 4. Derive physical fb0 dimensions from rotation --- */
-    if (g_display_rotation != 0) {
+    if (g_display_rotation == 90 || g_display_rotation == 270) {
         /* fb0 is portrait/transposed: swap logical w/h */
         g_panel_w = g_display_h;
         g_panel_h = g_display_w;
     } else {
+        /* 0° and 180°: panel dimensions match the logical canvas */
         g_panel_w = g_display_w;
         g_panel_h = g_display_h;
     }
@@ -186,9 +189,31 @@ void platform_init_from_env(void) {
         snprintf(g_python_home, sizeof(g_python_home), "%s", tmp);
     }
 
+    /* --- 9. App directory: dirname(dirname(/proc/self/exe)) --- */
+    /* e.g. /mnt/SDCARD/App/GVU/bin32/gvu → /mnt/SDCARD/App/GVU */
+    {
+        char exe_path[512] = {0};
+        ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
+        if (len > 0) {
+            exe_path[len] = '\0';
+            char *sl = strrchr(exe_path, '/');   /* strip binary name */
+            if (sl) { *sl = '\0';
+            sl = strrchr(exe_path, '/');          /* strip bin32 / bin64 */
+            if (sl) *sl = '\0'; }
+            snprintf(g_app_dir, sizeof(g_app_dir), "%s", exe_path);
+        }
+        if (!g_app_dir[0]) {
+            /* Fallback to CWD (launch.sh does cd "$APPDIR") */
+            char cwd[512];
+            if (getcwd(cwd, sizeof(cwd)))
+                snprintf(g_app_dir, sizeof(g_app_dir), "%s", cwd);
+        }
+    }
+
     fprintf(stderr, "platform_init: %s  canvas=%dx%d  rot=%d  panel=%dx%d\n",
             platform_name(g_platform),
             g_display_w, g_display_h, g_display_rotation,
             g_panel_w, g_panel_h);
-    fprintf(stderr, "  input=%s  python=%s\n", g_input_dev, g_python_bin);
+    fprintf(stderr, "  input=%s  python=%s  app_dir=%s\n",
+            g_input_dev, g_python_bin, g_app_dir);
 }
