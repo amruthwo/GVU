@@ -351,20 +351,281 @@ Note: on A30 the L1/L2/R1/R2 evdev codes differ from Mini/Flip — this is handl
 
 Ten built-in themes. Press R1 anywhere in the browser to cycle through them.
 
-| Theme name | Character |
-|---|---|
-| `SPRUCE` | Dark forest green background, light green text — default |
-| `monochrome` | Pure black background, near-white text |
-| `light_contrast` | White background, black text, lavender highlight |
-| `light_sepia` | Warm cream background, black text, sage green highlight |
-| `vampire` | Black background, deep red text and accents |
-| `coffee_dark` | Dark espresso brown background, cream text |
-| `cream_latte` | Cream background, dark brown text — light coffee tones |
-| `nautical` | Deep navy background, gold text, steel blue secondary |
-| `nordic_frost` | Light grey background, dark text, ice blue highlight |
-| `night` | Near-black background, light grey text, steel blue accents |
-
 `monochrome` was previously called `night_contrast`. If you see that name in old config files or notes, it's the same theme.
+
+### Color field reference
+
+Each theme defines 18 color fields across four groups:
+
+**UI colors** — used throughout the interface:
+
+| Field | Used for |
+|---|---|
+| `background` | Main background fill |
+| `text` | Primary text and icons |
+| `secondary` | Dimmed text, inactive elements |
+| `highlight_bg` | Selected item background, accent fills |
+| `highlight_text` | Text on top of a highlight_bg fill |
+| `statusbar_fg` | Status bar text and icons (clock, battery, WiFi) |
+
+**Cover art** (`default_cover.svg` recolored per theme):
+
+| Field | SVG element |
+|---|---|
+| `cover_body` | Cassette body / main shape |
+| `cover_tab` | Label tab accent |
+| `cover_shadow` | Drop shadow / dark inset |
+| `cover_screen` | Screen / window area |
+| `cover_play` | Play triangle |
+
+**App icon** (`app_icon.svg` recolored per theme — saved as `icon.png` for the SpruceOS launcher):
+
+| Field | SVG element |
+|---|---|
+| `icon_ring` | Outer ring outline |
+| `icon_circle` | Center circle fill |
+| `icon_outer` | Left and right arrow elements |
+| `icon_center` | Center arrow |
+
+**Folder cover** (`default_folder.svg` recolored per theme — shown for folders that have no scraped cover):
+
+| Field | SVG element |
+|---|---|
+| `folder_tab` | Small tab / accent element |
+| `folder_screen` | Light panel area |
+| `folder_body` | Main folder body |
+
+---
+
+### SPRUCE (default)
+
+| Field | Hex |
+|---|---|
+| background | `#14231e` |
+| text | `#d2e1d2` |
+| secondary | `#64826e` |
+| highlight_bg | `#326446` |
+| highlight_text | `#ffffff` |
+| statusbar_fg | `#d2e1d2` |
+| cover_body | `#d2e1d2` |
+| cover_tab | `#326446` |
+| cover_shadow | `#17292d` |
+| cover_screen | `#64826e` |
+| cover_play | `#ffffff` |
+| icon_ring | `#326446` |
+| icon_circle | `#d2e1d2` |
+| icon_outer | `#64826e` |
+| icon_center | `#326446` |
+| folder_tab | `#326446` |
+| folder_screen | `#d2e1d2` |
+| folder_body | `#64826e` |
+
+### monochrome
+
+| Field | Hex |
+|---|---|
+| background | `#000000` |
+| text | `#f0f0f0` |
+| secondary | `#808080` |
+| highlight_bg | `#f0f0f0` |
+| highlight_text | `#000000` |
+| statusbar_fg | `#f0f0f0` |
+| cover_body | `#808080` |
+| cover_tab | `#f0f0f0` |
+| cover_shadow | `#17292d` |
+| cover_screen | `#f0f0f0` |
+| cover_play | `#808080` |
+| icon_ring | `#808080` |
+| icon_circle | `#000000` |
+| icon_outer | `#808080` |
+| icon_center | `#f0f0f0` |
+| folder_tab | `#404040` |
+| folder_screen | `#f0f0f0` |
+| folder_body | `#808080` |
+
+### light_contrast
+
+| Field | Hex |
+|---|---|
+| background | `#ffffff` |
+| text | `#000000` |
+| secondary | `#a0a0a0` |
+| highlight_bg | `#a351c8` |
+| highlight_text | `#fafafa` |
+| statusbar_fg | `#a351c8` |
+| cover_body | `#a351c8` |
+| cover_tab | `#a0a0a0` |
+| cover_shadow | `#000000` |
+| cover_screen | `#fafafa` |
+| cover_play | `#a351c8` |
+| icon_ring | `#a351c8` |
+| icon_circle | `#fafafa` |
+| icon_outer | `#a0a0a0` |
+| icon_center | `#a351c8` |
+| folder_tab | `#000000` |
+| folder_screen | `#a0a0a0` |
+| folder_body | `#a351c8` |
+
+### light_sepia
+
+| Field | Hex |
+|---|---|
+| background | `#faf0dc` |
+| text | `#000000` |
+| secondary | `#a0a0a0` |
+| highlight_bg | `#789c70` |
+| highlight_text | `#faf0dc` |
+| statusbar_fg | `#789c70` |
+| cover_body | `#789c70` |
+| cover_tab | `#a0a0a0` |
+| cover_shadow | `#000000` |
+| cover_screen | `#faf0dc` |
+| cover_play | `#789c70` |
+| icon_ring | `#faf0dc` |
+| icon_circle | `#789c70` |
+| icon_outer | `#a0a0a0` |
+| icon_center | `#faf0dc` |
+| folder_tab | `#a0a0a0` |
+| folder_screen | `#e8d5b0` |
+| folder_body | `#789c70` |
+
+### vampire
+
+| Field | Hex |
+|---|---|
+| background | `#000000` |
+| text | `#c00000` |
+| secondary | `#c04040` |
+| highlight_bg | `#c00000` |
+| highlight_text | `#000000` |
+| statusbar_fg | `#c00000` |
+| cover_body | `#600000` |
+| cover_tab | `#c00000` |
+| cover_shadow | `#000000` |
+| cover_screen | `#000000` |
+| cover_play | `#c00000` |
+| icon_ring | `#600000` |
+| icon_circle | `#000000` |
+| icon_outer | `#600000` |
+| icon_center | `#c00000` |
+| folder_tab | `#222222` |
+| folder_screen | `#c00000` |
+| folder_body | `#600000` |
+
+### coffee_dark
+
+| Field | Hex |
+|---|---|
+| background | `#2b1f16` |
+| text | `#f5e6d3` |
+| secondary | `#a08c78` |
+| highlight_bg | `#6f4e37` |
+| highlight_text | `#ffffff` |
+| statusbar_fg | `#d2b48c` |
+| cover_body | `#f5e6d3` |
+| cover_tab | `#6f4e37` |
+| cover_shadow | `#17292d` |
+| cover_screen | `#a08c78` |
+| cover_play | `#ffffff` |
+| icon_ring | `#6f4e37` |
+| icon_circle | `#6f4e37` |
+| icon_outer | `#f5e6d3` |
+| icon_center | `#a08c78` |
+| folder_tab | `#6f4e37` |
+| folder_screen | `#f5e6d3` |
+| folder_body | `#a08c78` |
+
+### cream_latte
+
+| Field | Hex |
+|---|---|
+| background | `#f5e6d3` |
+| text | `#2b1f16` |
+| secondary | `#786450` |
+| highlight_bg | `#d2b48c` |
+| highlight_text | `#2b1f16` |
+| statusbar_fg | `#6f4e37` |
+| cover_body | `#d2b48c` |
+| cover_tab | `#786450` |
+| cover_shadow | `#2b1f16` |
+| cover_screen | `#2b1f16` |
+| cover_play | `#d2b48c` |
+| icon_ring | `#786450` |
+| icon_circle | `#d2b48c` |
+| icon_outer | `#2b1f16` |
+| icon_center | `#786450` |
+| folder_tab | `#2b1f16` |
+| folder_screen | `#786450` |
+| folder_body | `#d2b48c` |
+
+### nautical
+
+| Field | Hex |
+|---|---|
+| background | `#0f192d` |
+| text | `#d4af37` |
+| secondary | `#788cb4` |
+| highlight_bg | `#38589a` |
+| highlight_text | `#ffdc64` |
+| statusbar_fg | `#d4af37` |
+| cover_body | `#788cb4` |
+| cover_tab | `#38589a` |
+| cover_shadow | `#17292d` |
+| cover_screen | `#ffdc64` |
+| cover_play | `#38589a` |
+| icon_ring | `#ffdc64` |
+| icon_circle | `#38589a` |
+| icon_outer | `#788cb4` |
+| icon_center | `#ffdc64` |
+| folder_tab | `#38589a` |
+| folder_screen | `#ffdc64` |
+| folder_body | `#788cb4` |
+
+### nordic_frost
+
+| Field | Hex |
+|---|---|
+| background | `#eceff4` |
+| text | `#2e3440` |
+| secondary | `#81a1c1` |
+| highlight_bg | `#88c0d0` |
+| highlight_text | `#2e3440` |
+| statusbar_fg | `#88c0d0` |
+| cover_body | `#2e3440` |
+| cover_tab | `#88c0d0` |
+| cover_shadow | `#17292d` |
+| cover_screen | `#81a1c1` |
+| cover_play | `#2e3440` |
+| icon_ring | `#2e3440` |
+| icon_circle | `#88c0d0` |
+| icon_outer | `#81a1c1` |
+| icon_center | `#17292d` |
+| folder_tab | `#81a1c1` |
+| folder_screen | `#88c0d0` |
+| folder_body | `#2e3440` |
+
+### night
+
+| Field | Hex |
+|---|---|
+| background | `#0d0d10` |
+| text | `#f2f2f2` |
+| secondary | `#8888a0` |
+| highlight_bg | `#7ab2de` |
+| highlight_text | `#0d0d10` |
+| statusbar_fg | `#7ab2de` |
+| cover_body | `#52525e` |
+| cover_tab | `#7ab2de` |
+| cover_shadow | `#0d0d10` |
+| cover_screen | `#7ab2de` |
+| cover_play | `#0d0d10` |
+| icon_ring | `#7ab2de` |
+| icon_circle | `#0d0d10` |
+| icon_outer | `#52525e` |
+| icon_center | `#7ab2de` |
+| folder_tab | `#52525e` |
+| folder_screen | `#7ab2de` |
+| folder_body | `#8888a0` |
 
 ### Rounded corner values
 
