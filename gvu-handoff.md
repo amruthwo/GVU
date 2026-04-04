@@ -740,21 +740,62 @@ These notes are for the SpruceOS team if they want to take over development or i
 
 ### Current state
 
-GVU is working on A30, Brick, and Flip. Mini Flip V4 is working (audio via libpadsp). Mini V2/V3 audio is broken on some firmware — likely an ALSA config difference, not yet diagnosed.
+GVU is working on A30, Brick, and Flip. Mini Flip V4 is working (audio via libpadsp). Mini V2/V3 audio is silent — the mmiyoo audio backend is only in SpruceOS's custom SDL2, which is incompatible with `SDL_VIDEODRIVER=dummy` that GVU requires.
 
 The app ships as a zip that extracts to `/mnt/SDCARD/App/GVU/`. It launches via SpruceOS's standard `config.json` + `launch.sh` mechanism. No OS changes are required to install it.
 
-### If you want to move it to Emu/MEDIA/
+### How ffplay currently works in Emu/MEDIA/
 
-SpruceOS's `Emu/MEDIA/` folder where FFPLAY currently lives. Moving GVU there would mean it appears as the default video handler rather than a standalone app.
+This is based on reading the actual SpruceOS scripts on-device, so it's accurate as of the current SpruceOS version on the A30.
 
-What changes:
-- `launch.sh` would need to accept a file path as `$1` (SpruceOS passes the selected file to the emulator binary)
-- The file browser startup mode would be skipped if `$1` is set — launch directly into playback
-- `config.json` would move to `Emu/MEDIA/config.json`
-- The SpruceOS media browser handles the file picker; GVU's own browser would only be used as a fallback
+SpruceOS uses a single `standard_launch.sh` for all emulators. It's invoked with the selected file as `$1`, which gets normalized into `$ROM_FILE`. There is no per-emulator `launch.sh` — instead, `standard_launch.sh` has a case statement that calls into per-system function libraries.
 
-What stays the same: the binaries, resources, API keys, subtitle workflow — none of that changes.
+For MEDIA, it calls `media_functions.sh` which contains `run_ffplay()` and `run_mpv()`.
+
+**`/mnt/SDCARD/spruce/scripts/emu/lib/media_functions.sh` — A30 path:**
+```sh
+export PATH="$EMU_DIR/bin32:$PATH"
+export LD_LIBRARY_PATH="$EMU_DIR/lib32:/usr/miyoo/lib:/usr/lib:$LD_LIBRARY_PATH"
+ffplay -vf transpose=2 -fs -i "$ROM_FILE" > ffplay.log 2>&1
+```
+`-vf transpose=2` rotates 90° CW for the A30's portrait fb0. No gptokeyb — ffplay runs bare with no button remapping on A30.
+
+**64-bit devices (Brick, Flip, etc.):**
+```sh
+/mnt/SDCARD/spruce/bin64/gptokeyb -k "ffplay" -c "./bin64/ffplay.gptk" &
+sleep 1
+ffplay -x $DISPLAY_WIDTH -y $DISPLAY_HEIGHT -fs -loglevel 24 -i "$ROM_FILE"
+```
+gptokeyb translates gamepad buttons to ffplay keyboard shortcuts. The `.gptk` file maps: B→pause, L1→seek back, R1→jump to start, L2→skip forward, R2→skip back.
+
+**`/mnt/SDCARD/Emu/MEDIA/config.json` structure:**
+```json
+{
+    "launch": "../../spruce/scripts/emu/standard_launch.sh",
+    "extlist": "mp4|mkv|avi|mov|flv|ts|mp3|...",
+    "type": "mediaplayer",
+    "menuOptions": {
+        "Emulator_32": { "options": ["ffplay", "gme"], "selected": "ffplay", "devices": ["MIYOO_A30", ...] },
+        "Emulator_64": { "options": ["ffplay", "gme"], "selected": "ffplay", "devices": ["MIYOO_FLIP", "TRIMUI_BRICK", ...] }
+    },
+    ...
+}
+```
+The `menuOptions` groups define which emulator is available/selected per device family. `extlist` is what the file browser filters on.
+
+### If you want GVU in Emu/MEDIA/
+
+Based on how ffplay is integrated, replacing it with GVU would require:
+
+1. **Add a `run_gvu()` function to `media_functions.sh`** (or a new `gvu_functions.sh`) that sets up the environment and invokes `gvu32`/`gvu64` with `$ROM_FILE` as an argument. GVU would need to support a command-line file path argument to launch directly into playback, skipping its own file browser.
+
+2. **Update `config.json`** to add `"gvu"` to the `options` list in `Emulator_32` and `Emulator_64`, and add a case for `"gvu"` in the MEDIA case block of `standard_launch.sh`.
+
+3. **Handle the A30 rotation** — ffplay uses `-vf transpose=2`. GVU already handles this internally via `a30_screen.c`, so no ffmpeg filter is needed.
+
+4. **No gptokeyb needed** — GVU has its own input handling via evdev.
+
+None of this has been implemented yet. The GVU side would need a `--play <file>` argument mode added to `main.c`. The SpruceOS side changes would need to be coordinated with the SpruceOS team since they own `standard_launch.sh` and `media_functions.sh`.
 
 ### Build system notes
 
