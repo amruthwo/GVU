@@ -1,16 +1,17 @@
 # GVU — Video Player for SpruceOS Devices: Handoff Document
 
-> **Status as of 2026-03-23 (post-v0.1.1, subtitle workflow in active testing):** A30 build working on-device. Video playback, file
-> browser, OSD, seek, A/V sync, audio, theme cycling, history, resume, help overlay, volume keys,
-> screen tearing, dynamic UI scaling, themed launcher icon, B-to-exit, D-pad hold-to-scroll,
-> Plex-style 3-level media browser (shows → seasons → files), cover art scraping with live
-> season art refresh (Y button, TMDB primary / TVMaze fallback), independent per-view layout
-> preferences (persisted to `gvu.conf`), Clear History (SELECT), status bar (clock / title /
-> WiFi + battery — per-theme colors, WiFi hidden when off), rounded-corner UI throughout,
-> hardware volume sync at startup, .srt subtitle support (toggle + sync adjustment), and subtitle
-> download workflow (SubDL + Podnapisi, language picker, results list, ZIP extraction) all
-> implemented. **Sleep/wake audio recovery is partially working but not yet solved** — see the
-> sleep/wake section below for full analysis.
+> **Status: v0.1.2 — A30 release complete (2026-03-29).** All planned features shipped. Video
+> playback, file browser, OSD, seek, A/V sync, audio, theme cycling, history, resume, help
+> overlay, volume keys, portrait-direct 60fps pipeline, dynamic UI scaling, themed launcher icon,
+> B-to-exit, D-pad hold-to-scroll, Plex-style 3-level media browser (shows → seasons → files),
+> cover art scraping with live season art refresh (Y button, TMDB primary / TVMaze fallback),
+> independent per-view layout preferences (persisted to `gvu.conf`), Clear History (SELECT),
+> status bar (clock / title / WiFi + battery — per-theme colors, WiFi hidden when off),
+> rounded-corner UI throughout, hardware volume sync at startup, .srt subtitle support (toggle +
+> sync adjustment), subtitle download workflow (SubDL + Podnapisi, language picker, results list,
+> ZIP extraction), and sleep/wake audio recovery — all working. This branch (`A30`) is the
+> permanent record of the A30-only build. Multi-device (Brick, Flip, Mini Flip, etc.) work
+> continues in the `universal` branch.
 
 ---
 
@@ -433,8 +434,8 @@ Bullseye armhf, requires only GLIBC_2.4 — safe). Everything else is statically
 └── gvu.conf         # Theme, first-run flag, optional tmdb_key
 ```
 
-State (resume positions, history) lives at the device level — currently stored as flat files
-in the app directory (not yet moved to `/mnt/SDCARD/Saves/CurrentProfile/states/GVU/`).
+State (resume positions, history) lives at the device level — stored as flat files
+in the app directory (`/mnt/SDCARD/App/GVU/`).
 
 ### `launch.sh` (current A30 version)
 
@@ -1078,7 +1079,7 @@ GVU itself — it's a manual maintenance tool only.
 
 ---
 
-## Known Issues / TODO
+## Known Issues (all resolved in v0.1.2)
 
 ### Screen tearing — FIXED ✓
 Previously `a30_flip()` wrote directly into the displayed fb page, causing the display
@@ -1102,18 +1103,18 @@ KEY_VOLUMEDOWN → SDLK_MINUS   → player_volume_dn()   (-10%)
 SpruceOS may also process the volume key events to adjust ALSA system volume. Both work
 independently — no conflict.
 
-### Sleep/wake audio recovery — IN PROGRESS ⚠
+### Sleep/wake audio recovery — FIXED ✓
 
-**What currently works (deployed as of 2026-03-20):**
+**What's implemented (v0.1.2):**
 - FBIOPAN_DISPLAY blocking: fixed — permanently disabled after first wake, replaced with
   back→front memcpy. See `a30_screen_wake()` in `src/a30_screen.c`.
 - Wake detection: working — SDL_GetTicks frame-gap > 2000ms while playing.
-- DAC volume restore: working — `amixer sset 'digital volume' 63` via `posix_spawn`.
-- Cascade guard: in place — `wake_prev_frame = SDL_GetTicks()` set AFTER `audio_wake()`
-  returns, so the time spent inside audio_wake doesn't look like another sleep gap.
-
-**What doesn't work yet:** Audio is silent after wake. The ALSA PCM device enters a
-continuous underrun storm after wake and doesn't recover without being closed and reopened.
+- Audio device close/reopen: `audio_wake()` calls `SDL_CloseAudioDevice` + `SDL_OpenAudioDevice`
+  to reset the ALSA PCM state out of the underrun storm.
+- Ring clear: ring buffer flushed before close so the decode thread unblocks immediately.
+- DAC volume restore: `amixer sset 'Soft Volume Master' 255` via `posix_spawn` after reopen.
+- Cascade guard: `wake_prev_frame = SDL_GetTicks()` set AFTER `audio_wake()` returns, so the
+  ~2s SDL_CloseAudioDevice join does not look like another sleep gap.
 
 ---
 
@@ -1203,94 +1204,15 @@ is never cleared — the sentinel approach failed.
 
 ---
 
-#### Next step to try: Rev 2 + cascade guard
+#### The fix: Rev 2 + cascade guard (implemented in v0.1.2)
 
-The cascade guard (`wake_prev_frame = SDL_GetTicks()` after `audio_wake` returns) was added
-after Rev 2 was abandoned. Rev 2 WITH cascade guard has never been tested and is the most
-likely fix:
+`audio_wake()` now: clears the ring (unblocks decode thread), calls `SDL_CloseAudioDevice`
+(joins SDL audio thread — may block ~2s while ALSA recovers), then `SDL_OpenAudioDevice`,
+then `posix_spawn amixer` to restore DAC volume. The cascade guard sets
+`wake_prev_frame = SDL_GetTicks()` AFTER `audio_wake` returns, so the ~2s join does not
+appear as another sleep gap.
 
-**In `src/audio.c`, `audio_wake()`:**
-```c
-void audio_wake(AudioCtx *a) {
-    if (!a->dev) return;
-    double bps = AUDIO_OUT_RATE * AUDIO_OUT_CHANNELS * 2.0;
-    fprintf(stderr, "audio_wake: (clock=%.3f ring_delay=%.3fs)\n",
-            a->clock, a->ring.filled / bps);
-
-    /* Clear the ring first — unblocks the decode thread from ring_write,
-       and means the callback has nothing to drain while we're in CloseAudioDevice. */
-    SDL_LockMutex(a->ring.mutex);
-    double ring_delay = a->ring.filled / bps;
-    a->ring.filled = a->ring.read_pos = a->ring.write_pos = 0;
-    SDL_CondSignal(a->ring.not_full);
-    SDL_UnlockMutex(a->ring.mutex);
-    /* Adjust clock to compensate for the ring that was cleared */
-    SDL_LockMutex(a->clock_mutex);
-    a->clock -= ring_delay;
-    if (a->clock < 0.0) a->clock = 0.0;
-    SDL_UnlockMutex(a->clock_mutex);
-
-    /* Close and reopen the SDL audio device to reset the ALSA PCM state.
-       SDL_CloseAudioDevice joins SDL's audio thread, which may take 2+ seconds
-       while snd_pcm_recover runs — this is acceptable because the cascade guard
-       in main.c sets wake_prev_frame = SDL_GetTicks() AFTER this returns,
-       so the 2s block does not trigger a second audio_wake. */
-    SDL_CloseAudioDevice(a->dev);
-    a->dev = 0;
-
-    SDL_AudioSpec want = {
-        .freq = AUDIO_OUT_RATE, .format = AUDIO_SDL_FORMAT,
-        .channels = AUDIO_OUT_CHANNELS, .samples = AUDIO_SDL_SAMPLES,
-        .callback = audio_callback, .userdata = a,
-    };
-    SDL_AudioSpec got;
-    a->dev = SDL_OpenAudioDevice(NULL, 0, &want, &got, 0);
-    if (a->dev) SDL_PauseAudioDevice(a->dev, 0);
-
-#ifdef GVU_A30
-    /* Restore DAC volume — reset to 0 by hardware on every wake */
-    static char *child_argv[] = {
-        "sh", "-c", "amixer sset 'digital volume' 63 >/dev/null 2>&1", NULL
-    };
-    static char *child_env[] = {
-        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", NULL
-    };
-    pid_t pid;
-    posix_spawn(&pid, "/bin/sh", NULL, NULL, child_argv, child_env);
-#endif
-}
-```
-
-**In `src/main.c`, wake detection block — no changes needed beyond what's already there:**
-```c
-audio_wake(&player.audio);        /* may block ~2s inside SDL_CloseAudioDevice */
-a30_screen_wake();
-if (player.state == PLAYER_PAUSED)
-    SDL_PauseAudioDevice(player.audio.dev, 1);
-player_show_osd(&player);
-wake_prev_frame = SDL_GetTicks(); /* cascade guard: reset AFTER audio_wake returns */
-```
-
-**Clock concern with Rev 2 + ring clear:**
-The decode thread will fill the ring again during the ~2s wait inside `SDL_CloseAudioDevice`.
-When the new device starts playing, `a->clock` will have been advanced by the decode thread
-to a new decoded-ahead position. `audio_get_clock()` = `a->clock - ring_delay - sdl_delay`
-should still return approximately the right position since ring_delay will reflect the newly
-buffered data. Some brief A/V desync (~0.5s) is expected but should self-correct as video
-sync catches up.
-
-**If Rev 2 + cascade guard still cascades (unlikely but possible):**
-The cascade guard could fail if the ALSA thread takes more than the `wake_prev_frame` timer
-allows. Add a rate-limit: after `audio_wake`, don't allow another wake for 10 seconds:
-```c
-static Uint32 last_wake_ms = 0;
-if (/* gap detected */ && SDL_GetTicks() - last_wake_ms > 10000) {
-    last_wake_ms = SDL_GetTicks();
-    audio_wake(&player.audio);
-    ...
-    wake_prev_frame = SDL_GetTicks();
-}
-```
+See `src/audio.c:audio_wake()` for the complete implementation.
 
 ---
 
@@ -1548,25 +1470,24 @@ if (diff > AV_SYNC_THRESHOLD_SEC && !audio_done) { break; }
 ```
 
 ### History / resume state path
-Currently stored as flat files in the app directory. Planned location:
-`/mnt/SDCARD/Saves/CurrentProfile/states/GVU/gvu.state` — not yet moved.
+Stored as flat files in the app directory (`/mnt/SDCARD/App/GVU/`).
 
 ### Non-A30 devices
-64-bit build and multi-device `launch.sh`/`config.json` not yet done. The codebase is
-structured to support it (`platform.c`, `#ifdef GVU_A30` guards throughout) but the 64-bit
-cross-compile toolchain and packaging have not been set up.
+Multi-device support (Brick, Flip, Mini Flip, Miyoo Mini family) is implemented in the
+`universal` branch. This `A30` branch is the permanent record of the A30-only build.
 
 ---
 
 ## GitHub Repository
 
 The canonical source is at **https://github.com/amruthwo/GVU** (SSH: `git@github.com:amruthwo/GVU.git`).
-The default branch is `master`.
+The default branch is `main`. This document lives on the `A30` branch (A30-only builds).
+Multi-device work is on the `universal` branch.
 
-### First-time clone
+### First-time clone (A30 branch)
 
 ```bash
-git clone git@github.com:amruthwo/GVU.git ~/Projects/GVU/gvu
+git clone -b A30 git@github.com:amruthwo/GVU.git ~/Projects/GVU/gvu
 cd ~/Projects/GVU/gvu
 ```
 
@@ -1577,24 +1498,23 @@ echo "your_32char_tmdb_key" > .tmdb_key
 echo "your_subdl_key"       > .subdl_key
 ```
 
-### Pushing a change
-
-The normal workflow — edit, build/test, commit, push:
+### Build and deploy
 
 ```bash
-# 1. Build and deploy to device for testing
-docker run --rm -v $(pwd):/gvu:z gvu-a30 \
-    bash -c "make -C /gvu miyoo-a30-build && cp /gvu/gvu32 /gvu/build/gvu32"
-docker run --rm -v $(pwd):/gvu:z gvu-a30 \
-    python3 /gvu/cross-compile/miyoo-a30/patch_verneed.py /gvu/build/gvu32
-scp build/gvu32 spruce@<device-ip>:/mnt/SDCARD/App/GVU/
+# Build (uses podman; env -u USER avoids USER=spruce lchown errors)
+env -u USER podman run --rm -v "$(pwd):/gvu:z" localhost/gvu-a30-builder:latest \
+    sh /gvu/cross-compile/miyoo-a30/build_inside_docker.sh
 
-# 2. Commit (from repo root ~/Projects/GVU/gvu)
+# Deploy
+scp build/gvu32 spruce@<device-ip>:/mnt/SDCARD/App/GVU/bin32/gvu
+```
+
+### Pushing a change
+
+```bash
 git add src/whatever.c src/whatever.h
 git commit -m "Short description of change"
-
-# 3. Push
-git push origin master
+git push origin A30
 ```
 
 ### Docker note
@@ -1718,16 +1638,19 @@ sed 's/ /%20/g; s/!/%21/g; ...'   # OK in BusyBox sed
 
 ### posix_spawn from C and PATH
 
-`posix_spawn` inherits the parent process's environment **only if you pass `envp = NULL`**.
-GVU always passes an explicit `child_env[]` array with a clean `PATH` to avoid `LD_LIBRARY_PATH`
-contamination (the app's `LD_LIBRARY_PATH` points to `libs32/`, which contains only `libz.so.1`
-but still affects child process linking). The clean PATH used:
+`posix_spawn` with `envp = NULL` spawns into a **clean (empty) environment** on glibc 2.23 —
+the child does NOT inherit the parent's `PATH` or `LD_LIBRARY_PATH`. On the A30 build this was
+not a problem because the scrape script used BusyBox `wget` (which lives in standard paths
+accessible without PATH), but it was a hard-won lesson. The subtitle subprocess always used an
+explicit `child_env[]` to avoid it:
 
 ```c
 "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 ```
 
-This PATH resolves to BusyBox `wget`, BusyBox `sh`, etc. — not GNU tools.
+This PATH resolves to BusyBox `wget`, BusyBox `sh`, etc. — not GNU tools. The `universal`
+branch passes `environ` to scrape subprocesses to inherit the full SpruceOS environment
+(including the GNU wget in `/mnt/SDCARD/spruce/bin`).
 
 ### SSH vs on-device behavior
 
