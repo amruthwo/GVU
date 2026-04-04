@@ -53,9 +53,10 @@ gvu/
 │   │   ├── Dockerfile.gvu        builds SDL2/FFmpeg for ARMv7 static link
 │   │   ├── build_inside_docker.sh
 │   │   ├── patch_verneed.py      patches GLIBC_2.28/2.29 → GLIBC_2.4
-│   │   ├── package_gvu_universal.sh
+│   └── universal/
+│       ├── package_gvu_universal.sh
 │   │   └── gvu_base/             launch.sh, config.json for SpruceOS
-│   └── trimui-brick/
+│   ├── trimui-brick/
 │       ├── Dockerfile.gvu        builds SDL2/FFmpeg for AArch64 static link
 │       ├── build_inside_docker.sh
 │       └── gvu_base/
@@ -96,20 +97,22 @@ env -u USER podman run --rm -v "$(pwd):/gvu:z" gvu-a30-builder  sh /gvu/cross-co
 env -u USER podman run --rm -v "$(pwd):/gvu:z" gvu-brick         sh /gvu/cross-compile/trimui-brick/build_inside_docker.sh
 
 # Package (creates GVU_v<VERSION>.zip)
-sh cross-compile/miyoo-a30/package_gvu_universal.sh 0.2.1
+sh cross-compile/universal/package_gvu_universal.sh 0.2.1
 ```
 
-Outputs: `build/gvu32`, `build/gvu64`, `build/bin32/fetch_subs32`, `build/bin64/fetch_subs64`, and a zip in the repo root.
+Outputs: `build/gvu32`, `build/gvu64`, `build/fetch_subs32`, `build/fetch_subs64`, and a zip in the repo root. The package script copies these into the `bin32/`/`bin64/` layout expected by `launch.sh`.
 
 ### Deploy to device
 
+For a quick binary-only update (skip packaging):
+
 ```sh
-# A30 (192.168.1.62 by default on SpruceOS)
-scp build/gvu32 spruce@<ip>:/mnt/SDCARD/App/GVU/gvu32
+# A30
+scp build/gvu32 spruce@<ip>:/mnt/SDCARD/App/GVU/bin32/gvu
 
 # Brick / Flip (sftp required on some firmware versions)
 sftp spruce@<ip>
-put build/gvu64 /mnt/SDCARD/App/GVU/gvu64
+put build/gvu64 /mnt/SDCARD/App/GVU/bin64/gvu
 ```
 
 ### What not to commit
@@ -129,7 +132,7 @@ Two separate containers, one per architecture:
 | `cross-compile/miyoo-a30/Dockerfile.gvu` | `gvu-a30-builder` | ARMv7 (arm-linux-gnueabihf) | `gvu32`, `fetch_subs32` |
 | `cross-compile/trimui-brick/Dockerfile.gvu` | `gvu-brick` | AArch64 | `gvu64`, `fetch_subs64` |
 
-Each container builds SDL2, FFmpeg, mbedTLS, and libcurl from source with static linking, so the binary has no shared library dependencies beyond glibc.
+Each container builds SDL2, FFmpeg, OpenSSL 1.1.1w, and libcurl from source with static linking, so the binary has no shared library dependencies beyond glibc.
 
 ### VERNEED patching (A30 only)
 
@@ -204,7 +207,7 @@ One rule worth knowing: always flush the codec before seeking. The video and aud
 
 ### A/V sync
 
-The audio clock drives sync. The video thread drops or holds frames to match it. There's a configurable catchup threshold (default 250ms) — if video falls more than 250ms behind audio, it skips frames to catch up. If video is ahead of audio, it holds the current frame.
+The audio clock drives sync. The video thread drops or holds frames to match it. Two thresholds control behavior (`player.c`): `AV_SYNC_THRESHOLD_SEC = 0.040` (40ms) — if video is ahead of audio by more than this, hold the frame. `AV_NOSYNC_THRESHOLD_SEC = 0.15` (150ms) — if video is more than 150ms behind audio, drop the frame without displaying it to catch up.
 
 On slow devices (A30, Mini Flip) the video decode thread can't always keep up with a 24fps H.264 stream. The frame queue has a max depth (4 frames); if it's full, the decode thread waits. The main thread's blit path checks the audio clock before deciding which frame to show.
 
@@ -214,9 +217,9 @@ On slow devices (A30, Mini Flip) the video decode thread can't always keep up wi
 
 **Brick/Flip:** Standard SDL2 with hardware-accelerated renderer. Tear-free via DRM vsync on Flip (fb0 is single-page on Flip, so `FBIOPAN_DISPLAY` would crash — SDL2's DRM backend handles it instead).
 
-**Mini Flip V4:** Same as Brick/Flip path but the display is 752×560 and rotated 180°. SDL2 handles it via `SDL_HINT_ORIENTATIONS`.
+**Mini Flip V4:** Same as Brick/Flip path. `launch.sh` detects V4 by checking fb0 for the `752x560p` mode string and overrides `GVU_DISPLAY_W=752 GVU_DISPLAY_H=560 GVU_DISPLAY_ROTATION=180`, which platform.c picks up via env vars at startup.
 
-**Mini V2/V3:** SDL2 640×480. Audio is silent on some firmware versions — known issue, not yet resolved.
+**Mini V2/V3:** SDL2 640×480. Audio is silent. Root cause: the mmiyoo audio backend only exists in SpruceOS's custom SDL2 build, which doesn't support `SDL_VIDEODRIVER=dummy`. Since GVU needs dummy video to use its own fb0 path, it can't use that SDL2 — so audio is set to `SDL_AUDIODRIVER=dummy` and runs silent.
 
 ---
 
@@ -227,7 +230,7 @@ On slow devices (A30, Mini Flip) the video decode thread can't always keep up wi
 - **Binary:** `gvu32` (ARMv7 hard-float)
 - **Display:** fb0 is 480×640 portrait, ARGB8888. App renders 640×480; `a30_flip()` rotates 90° CCW into fb0.
 - **SDL:** `SDL_VIDEODRIVER=dummy` is mandatory. SDL must never touch fb0 directly.
-- **Audio:** ALSA. Hardware volume sync at startup via `amixer`. SpruceOS sets the ALSA mixer on launch, so GVU reads the current level and mirrors it.
+- **Audio:** OSS/DSP (`SDL_AUDIODRIVER=dsp`). Hardware volume sync at startup via `amixer`.
 - **glibc:** 2.23. VERNEED patching required. `glibc_compat.c` provides the `fcntl64` shim.
 - **Sleep/wake:** After wake, `FBIOPAN_DISPLAY` can block for 100+ seconds waiting for vsync from the display controller. Fix is in `a30_screen.c` — see the `s_fb_wake_frames` guard.
 - **App dir on device:** `/mnt/SDCARD/App/GVU/`
@@ -242,22 +245,21 @@ On slow devices (A30, Mini Flip) the video decode thread can't always keep up wi
 ### Miyoo Flip (V1/V2)
 
 - **Binary:** `gvu64`
-- **Display:** 640×480. Single-page fb0 — `FBIOPAN_DISPLAY` will crash. SDL2's DRM/KMS backend provides vsync instead.
-- **Audio:** ALSA, `plughw:0,0`. A `.asoundrc` is written to the home dir at launch if not present. Without it, ALSA fails with "device busy" on Flip.
+- **Display:** 1024×768. Single-page fb0 — `FBIOPAN_DISPLAY` will crash. SDL2's DRM/KMS backend provides vsync instead.
+- **Audio:** ALSA, `plughw:0,0`. `launch.sh` writes a `.asoundrc` to `$HOME` before launch. Without it, ALSA fails with "device busy" because PyUI holds hw:0,0 exclusively.
 - **App dir on device:** `/mnt/SDCARD/App/GVU/`
 
 ### Miyoo Mini Flip (V4)
 
 - **Binary:** `gvu32` (ARMv7)
-- **Display:** 752×560. SDL2. 180° rotation applied.
-- **Audio:** SigmaStar MI_AO hardware. SpruceOS ships `libpadsp.so` which bridges `/dev/dsp` to the MI_AO layer. `SDL_AUDIODRIVER=dsp` + LD_PRELOAD of libpadsp makes it work.
-- **Volume:** Device volume buttons work via ALSA mixer events. GVU reads and mirrors hardware volume at startup.
+- **Display:** 752×560, 180° rotation. `launch.sh` overrides display dimensions and rotation via `GVU_DISPLAY_W/H/ROTATION` env vars, which `platform.c` reads at startup.
+- **Audio:** SigmaStar MI_AO hardware. SpruceOS ships `libpadsp.so` which bridges `/dev/dsp` to the MI_AO layer. `launch.sh` sets `SDL_AUDIODRIVER=dsp` and `LD_PRELOAD=/customer/lib/libpadsp.so`.
 
 ### Miyoo Mini V2/V3
 
 - **Binary:** `gvu32`
 - **Display:** 640×480 SDL2
-- **Audio:** Silent on some firmware versions. Root cause not yet identified.
+- **Audio:** Silent. The mmiyoo audio backend only exists in SpruceOS's custom SDL2 build, which doesn't support `SDL_VIDEODRIVER=dummy`. Since GVU requires dummy video to drive its own fb0 path, these are incompatible. Audio runs as `SDL_AUDIODRIVER=dummy`.
 
 ---
 
@@ -347,37 +349,34 @@ Note: on A30 the L1/L2/R1/R2 evdev codes differ from Mini/Flip — this is handl
 
 ## Color Themes
 
-Ten built-in themes. Cycle with L1/R1 on the theme picker (accessible from the settings menu).
+Ten built-in themes. Press R1 anywhere in the browser to cycle through them.
 
 | Theme name | Character |
 |---|---|
-| `spruce` | Dark green + cream, default |
-| `monochrome` | High-contrast black and white |
-| `slate` | Cool grey-blue |
-| `amber` | Warm amber on dark |
-| `crimson` | Deep red accent |
-| `ocean` | Teal/blue on dark |
-| `dusk` | Purple-grey |
-| `sakura` | Pink-rose on light |
-| `forest` | Muted green |
-| `papyrus` | Warm light/sepia |
+| `SPRUCE` | Dark forest green background, light green text — default |
+| `monochrome` | Pure black background, near-white text |
+| `light_contrast` | White background, black text, lavender highlight |
+| `light_sepia` | Warm cream background, black text, sage green highlight |
+| `vampire` | Black background, deep red text and accents |
+| `coffee_dark` | Dark espresso brown background, cream text |
+| `cream_latte` | Cream background, dark brown text — light coffee tones |
+| `nautical` | Deep navy background, gold text, steel blue secondary |
+| `nordic_frost` | Light grey background, dark text, ice blue highlight |
+| `night` | Near-black background, light grey text, steel blue accents |
 
 `monochrome` was previously called `night_contrast`. If you see that name in old config files or notes, it's the same theme.
 
 ### Rounded corner values
 
-The UI uses rounded rectangles throughout. Default radii (in pixels, at base 640×480):
+Rounded rectangles are used in the OSD and toast notifications (`player.c`). Radii are computed via the `sc(base, win_w)` helper which scales linearly from a 640px base:
 
-| Element | Radius |
-|---|---|
-| Card tiles (browser grid) | 10 |
-| Season / file list rows | 8 |
-| OSD bar | 12 |
-| Help overlay panels | 14 |
-| Hint bar pills | 8 |
-| Status bar | 0 (flat) |
+| Element | Base radius | At 640px | At 1024px |
+|---|---|---|---|
+| OSD bar, volume bar | `sc(8, w)` | 8px | 13px |
+| Subtitle/status toasts | `sc(8, w)` | 8px | 13px |
+| OSD background box | `sc(16, w)` | 16px | 26px |
 
-These scale proportionally with `g_display_w/g_display_h` on larger screens (Brick, Smart Pro).
+The browser (folder grid, season list, file list) uses standard `SDL_RenderFillRect` — no rounded corners.
 
 ### Folder icon and help overlay caching
 
@@ -407,7 +406,7 @@ TMDB API key is read from `gvu.conf` (`tmdb_key = ...`). If the key is absent, T
 
 ## Subtitle Download
 
-`fetch_subs` is a compiled C binary (not a shell script). It links statically against libcurl + mbedTLS and handles the SubDL and Podnapisi APIs, JSON parsing, and ZIP extraction entirely in C. This replaced the earlier Python-based approach because SpruceOS devices don't have a reliable Python environment.
+`fetch_subs` is a compiled C binary (not a shell script). It links statically against libcurl + OpenSSL 1.1.1w and handles the SubDL and Podnapisi APIs, JSON parsing, and ZIP extraction entirely in C. This replaced the earlier Python-based approach because SpruceOS devices don't have a reliable Python environment.
 
 Flow:
 1. User initiates subtitle search from the OSD menu.
@@ -464,7 +463,7 @@ These have all caused debugging headaches at some point.
 
 FFmpeg is built with a limited codec set to keep binary size reasonable:
 
-- Video: H.264 (libx264 decode), H.265/HEVC, MPEG-4, VP8, VP9 (software decode only)
+- Video: H.264, H.265/HEVC, MPEG-4, VP8, VP9 (software decode only)
 - Audio: AAC, MP3, AC3, Opus, Vorbis, FLAC, PCM variants
 - Containers: MP4, MKV, AVI, WebM, MOV
 
@@ -504,7 +503,7 @@ The VERNEED patch (`patch_verneed.py`) is the one non-obvious step. It's run aut
 
 ### What's not done yet
 
-- Mini V2/V3 audio: needs diagnosis on-device with `aplay` to find the correct ALSA device string
+- Mini V2/V3 audio: silent by design — the mmiyoo audio backend requires SpruceOS's SDL2 which doesn't support `SDL_VIDEODRIVER=dummy`. Fixing this would require building a custom SDL2 with both mmiyoo audio and dummy video support, or finding another audio path on those devices
 - Multiple audio track support: works for 2 tracks but crashes on some files with 3+ tracks — needs a bounds check in `player.c`
 - Hardware decode: would help A30 significantly for H.264 720p content if the VPU can be accessed
 - Gamepad rumble on Brick/Flip: SDL2 supports it, would be a nice touch for seek feedback

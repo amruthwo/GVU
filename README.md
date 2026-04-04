@@ -8,7 +8,7 @@
 
 ![GVU screenshot](images/gvu_screenshot.png)
 
-GVU is a native video player for SpruceOS devices. It has a three-level media browser (shows → seasons → episodes), automatic cover art fetching, watch history with resume, .srt subtitle support with on-device subtitle download, and a clean fullscreen playback UI with OSD. It's written in C around FFmpeg and SDL2.
+GVU is a native video player for SpruceOS devices. It has a three-level media browser (shows → seasons → files), automatic cover art fetching, watch history with resume, .srt subtitle support with on-device subtitle download, and a clean fullscreen playback UI with OSD. It's written in C around FFmpeg and SDL2.
 
 ---
 
@@ -18,7 +18,7 @@ GVU is a native video player for SpruceOS devices. It has a three-level media br
 |---|---|
 | Miyoo A30 | 640×480, ARMv7. Works great. |
 | TrimUI Brick / Hammer | 1024×768, AArch64. Works great. |
-| Miyoo Flip V1/V2 | 640×480, AArch64. Works great. |
+| Miyoo Flip V1/V2 | 1024×768, AArch64. Works great. |
 | Miyoo Mini Flip (V4) | 752×560, ARMv7. Audio via SigmaStar bridge. |
 | Miyoo Mini V2/V3 | 640×480, ARMv7. Video works; audio broken on some firmware. |
 
@@ -36,7 +36,7 @@ On first launch, GVU scans your media folders and builds its library. Make sure 
 
 ## Features
 
-- **File browser** — three-level hierarchy (shows → seasons → files), folder grid with cover art
+- **File browser** — three-level hierarchy (shows → seasons → files) with folder grid and cover art
 - **Cover art** — automatic fetch from TMDB and TVMaze (press Y on any show)
 - **Playback** — fullscreen, hardware-scaled, software-decoded H.264/H.265/VP9/MP4/MKV/AVI
 - **Seek** — frame-accurate, ±10s / ±60s by default
