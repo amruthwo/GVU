@@ -441,26 +441,258 @@ both the A30 (`#ifdef GVU_A30`) and Brick (`#ifdef GVU_BRICK`) rendering paths.
 
 ### Remaining work
 
-- **Video tearing (Brick) — FIXED ✓**: Re-enabled `FBIOPAN_DISPLAY` double-buffering on
-  Brick (`s_fb_pan_disabled = 0`). Was disabled due to fear of ~16ms vsync block causing
-  frame drops, but in practice the decode pipeline fills that wait — no dropped frames at
-  25fps or 60fps. `FBIO_WAITFORVSYNC` was tried first but had no effect (driver likely
-  doesn't support it).
-- **Video tearing (A30)**: Same `s_fb_pan_disabled` flag exists. A30 comment warns of ~28ms
-  block (vs Brick's ~16ms). At 25fps (40ms budget) it should be fine; 60fps is risky.
-  Test by setting `s_fb_pan_disabled = 0` in `a30_screen.c` — rebuild A30 image first
-  (needs OpenSSL switch anyway).
-- **A30 fetch_subs**: ✓ Dockerfile switched to OpenSSL 1.1.1w; Docker image rebuilt; `fetch_subs32`
-  and `gvu32` built. Deploy pending (A30 offline at time of build):
-  ```sh
-  sftp spruce@192.168.1.62
-  put build/gvu32 /mnt/SDCARD/App/GVU/bin32/gvu
-  put build/fetch_subs32 /mnt/SDCARD/App/GVU/bin32/fetch_subs
-  ```
-- **Miyoo Mini family**: 180° rotation, 752×560 resolution (Flip/V4), ALSA audio failure,
-  L1/R1 ↔ L2/R2 swap — not addressed.
-- **Miyoo Flip tearing**: fb0 has only 1 page (virtual_yres=yres). Try FBIOPUT_VSCREENINFO
-  to expand to 2 pages at init — if RK3566 driver accepts it, enables FBIOPAN_DISPLAY double-
-  buffering. Safe to try (not the sunxi overlay that breaks on A30).
-- **Stale image on Flip startup**: brief flash of previous session's fb0 content before first
-  GVU paint. Investigate and fix.
+- **Video tearing (Brick) — FIXED ✓**: DRM/KMS page-flip via raw ioctls (no libdrm). See
+  project_gvu_flip.md for full details.
+- **Miyoo Flip tearing — FIXED ✓**: DRM/KMS page-flip. `s_use_drm=1`, pitch=2560, 60fps
+  tear-free confirmed. Brick has no DRM connectors exposed → correctly falls back to fb0.
+- **Stale image on Flip startup — FIXED ✓**: `dd if=/dev/zero of=/dev/fb0` in launch.sh +
+  `memset(s_fb_mem, 0, s_fb_size)` in `brick_screen_close()`.
+- **A30 volume — FIXED ✓**: Software volume. `audio.volume` initialised from SVM at
+  `player_open` (was hardcoded 1.0 → OSD/audio desync). No amixer calls anywhere.
+- **A30 fetch_subs — FIXED ✓**: Three glibc compat issues resolved:
+  1. `patch_verneed.py` PATCH_MAP extended to cover GLIBC_2.25 and GLIBC_2.27
+  2. `getentropy` shim added to `fetch_subs.c` (OpenSSL entropy; absent in A30 libc)
+  3. `glibc_compat.c` now linked into fetch_subs32 (`-DGVU_A30`); provides `fcntl64`
+- **Subtitle search timeout**: 45s watchdog added to main loop — shows toast instead of
+  hanging forever if fetch_subs crashes without writing the done file.
+- **Video tearing (A30)**: `s_fb_pan_disabled=1` intentionally for 60fps. `FBIOPAN_DISPLAY`
+  blocks ~28ms on A30. Can be enabled for tear-free at the cost of 60fps → ~30fps cap.
+- **Miyoo Mini family**: 180° rotation, 752×560 resolution (Mini Flip/V4), no audio,
+  L1/R1 ↔ L2/R2 swap — not yet addressed.
+
+---
+
+## Session 2026-04-03 — Theme/UI Polish + Miyoo Mini V2/V3 Support
+
+### SubDL SSL on ARM32 — FIXED ✓
+
+**Root cause**: Static OpenSSL 1.1.1w `linux-armv4` build cannot verify ECDSA certificate
+chains on ARM32, regardless of CA bundle content. This is a known limitation of the
+`linux-armv4` target (lacks the full EC instruction path that upstream builds assume).
+
+**Fix** (`src/fetch_subs.c`): Disabled SSL peer verification on ARM32:
+```c
+#ifdef GVU_A30
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);  // ECDSA can't be verified on ARM32
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+#else
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+    if (g_ca_path) curl_easy_setopt(curl, CURLOPT_CAINFO, g_ca_path);
+#endif
+```
+Also switched CA bundle loading from `CURLOPT_CAINFO_BLOB` (in-memory) to `CURLOPT_CAINFO`
+(file path) — simpler and more compatible with the OpenSSL backend.
+
+Acceptable trade-off for subtitle downloads. Brick/aarch64 keeps full verification.
+
+**Podnapisi**: Permanently down (Cloudflare-blocked). SubDL is the only working provider.
+
+---
+
+### Theme + UI Changes — DEPLOYED ✓
+
+#### Per-theme folder cover icon in file browser
+- New `resources/default_folder.svg` — distinct folder shape for directories in browser grid
+- `src/theme.h`: Added `RGB folder_tab`, `folder_screen`, `folder_body` to Theme struct
+- `src/theme.c`: Per-theme folder colors in `THEMES[]`; `svg_recolor_folder()` replaces
+  three color slots in the SVG; `theme_render_folder_cover()` rasterizes via nanosvg
+- `src/main.c`: Loads `default_folder` texture, passes to `browser_draw()`, re-renders on
+  theme cycle, cleans up on exit
+- SVG original colors: Tab=`#71c6c4`, Screen=`#dde5e8`, Body=`#afc3c9`
+- Special overrides: vampire tab=`#222222`, light_sepia screen=`#e8d5b0` (bg clash), night
+  body=`#8888a0` (bg clash), monochrome tab=`#404040` (distinct from body)
+
+#### Season list (VIEW_SEASONS) contrast fix
+- Combined season name + episode count into single label: `"Season X - XX episodes"`
+- Single pill behind combined label when backdrop active (was two separate pills — too busy)
+- Fixes contrast on cream_latte, nordic_frost, light_contrast, light_sepia with dark covers
+
+#### Monochrome theme (renamed from night_contrast)
+- 4-tone palette: `#000000`, `#404040`, `#808080`, `#f0f0f0`
+- Inverse-video selection: white highlight_bg + black highlight_text on black background
+- Designed for MiniUI/NextUI port compatibility (no colour dependencies)
+- `statusbar_fg`, `secondary`, `icon_outer` all updated to greyscale
+
+#### Other colour fixes
+- night folder body: `#0d0d10` → `#8888a0` (was same as background)
+- light_sepia folder screen: `#faf0dc` → `#e8d5b0` (was same as background)
+- light_sepia icon: outer/center arrows swapped for better contrast
+
+---
+
+### Persistent Log — CHANGED
+
+`LOG` in `launch.sh` moved from `/tmp/gvu.log` (RAM, lost on power-off) to
+`$APPDIR/gvu.log` (`/mnt/SDCARD/App/GVU/gvu.log`). Survives power-off; readable from card
+reader. Useful for debugging WiFi-less devices.
+
+---
+
+### Miyoo Mini V2/V3 — PARTIALLY WORKING
+
+**Platform detection**: SpruceOS uses a shared `MiyooMini.cfg` for all Mini variants
+(reports `DISPLAY_WIDTH=640 DISPLAY_HEIGHT=480 DISPLAY_ROTATION=0` for all).
+V4 (Mini Flip) is detected by `grep -q "752x560p" /sys/class/graphics/fb0/modes`.
+
+**launch.sh changes** (`MIYOO_V4` var set early, used throughout):
+- `GVU_DISPLAY_ROTATION=180` override for all MiyooMini variants (physical upside-down mount)
+- V4: additional `GVU_DISPLAY_W=752 GVU_DISPLAY_H=560` override
+
+**Display**: ✓ Working — 640×480 at 180° rotation
+
+**Input**: ✓ Working — `EVENT_PATH_READ_INPUTS_SPRUCE=/dev/input/event0` on V2/V3
+
+**Battery**:
+- V3/V4 (axp_test present): JSON poller via `/customer/app/axp_test`
+- V2/og (no axp_test): uses `/mnt/SDCARD/spruce/miyoomini/bin/read_battery` binary
+  (outputs plain integer percent; always reports "Discharging" — V2 has no charge detection)
+- Fallback: `${BATTERY}/capacity` sysfs path (likely absent on V2/V3)
+
+**Audio**: ✗ Not working — fundamental incompatibility:
+- V2/V3 audio requires the custom `mmiyoo` SDL audio driver
+- `mmiyoo` driver only exists in SpruceOS's SDL2 (`miyoomini/lib/libSDL2-2.0.so.0`)
+- SpruceOS's SDL2 does NOT have the `dummy` video driver GVU requires
+- Our SDL2 (lib32/) has `dummy` video but no `mmiyoo` audio
+- `/dev/dsp` exists on device but is a SigmaStar stub — rejects standard OSS ioctls
+- `libpadsp.so` is V4-only; not present on V2/V3 SD card
+- **Solution would require**: building our SDL2 with the `mmiyoo` audio backend (needs
+  SpruceOS SDL2 source + SigmaStar MI_AO headers)
+- **Current state**: `SDL_AUDIODRIVER=dummy` — silent playback
+
+**Volume**: V2/V3 has a hardware volume wheel, not buttons. Software volume control is
+irrelevant. GVU's volume OSD still shows but has no effect on actual output level.
+
+---
+
+## Session save point (2026-04-01) — A30 + Brick + Flip all working
+
+**Confirmed working on device:**
+- Flip: DRM/KMS tear-free ✓, audio (ALSA plughw:0,0) ✓, video ✓, subtitles ✓
+- Brick: fb0 double-buffering ✓, audio (OSS/dsp) ✓, video ✓, subtitles ✓
+- A30: display ✓, audio/volume ✓, video ✓, subtitles ✓ (tearing intentional)
+
+**Not yet tested:** Miyoo Mini v2, Miyoo Mini Flip
+
+---
+
+## Session 2026-04-04 — Mini Flip Video Freeze + Statusbar Dim Fix
+
+### Mini Flip video freeze root cause (FIXED ✓)
+
+**Symptom**: video froze after ~1 second of playback on every seek; audio and subtitles continued.
+
+**Root cause** (confirmed via `[diag]` + `[sws]` diagnostic logging):
+- Futurama S01E01 is **480×360 SD**
+- `video.c` pre-scaled tex to fit rect: 480×360 → **746×560 (upscale)**
+- `sws_scale` upscaling 480×360 → 746×560 took **35-40ms per frame**
+- 25fps content = 40ms budget → sws consumed the entire frame budget
+- AV sync diff grew ~130ms/s more negative; once past -150ms nosync threshold, every frame was dropped without display → video appeared frozen
+
+**Fix** (`src/video.c:video_open`):
+- For A30 portrait (`g_display_rotation == 270`): keep existing behavior (pre-scale to fit rect in sws + portrait_direct NEON kernel). sws **downscales** to small fit rect → fast.
+- For Mini Flip and all other landscape rotation=180/0 devices: **set `tex_w = native_w`, `tex_h = native_h`**. sws does only YUV→BGRA format conversion (no resize). SDL_RenderCopy handles the scale to fit rect at render time.
+- Measured result: sws time dropped from 35-40ms to ~5ms for 480×360 SD content.
+
+**Key insight**: the original "pre-scale in sws, 1:1 SDL blit" optimization is correct for A30 (sws **downscales** = fast NEON). It backfires for landscape devices with SD content that needs **upscaling** (sws processes more output than input pixels). Letting SDL_RenderCopy scale is faster for that case.
+
+**Diagnostic code** (temporary, leave in until stable — strip before release):
+- `src/player.c:player_update()`: `[diag]` line logged once/sec showing raw_clk, ring_delay, master, vq, vf_pts, diff, out_rate
+- `src/video.c:video_sws_thread()`: `[sws]` line logged once/sec showing frames/s, last frame ms, src/dst dims
+
+### Statusbar brightness dimming fix (FIXED ✓)
+
+**Symptom**: top status bar (wifi/battery/clock) was not dimmed when brightness was lowered.
+
+**Root cause**: draw order in `main.c` playback path:
+1. `player_draw()` — draws video + OSD + **brightness black overlay**
+2. `statusbar_draw()` — drawn **on top of** the brightness overlay → unaffected by dim
+
+**Fix**: added `int show_statusbar` parameter to `player_draw()`. Statusbar is now drawn **inside** `player_draw()`, just **before** the brightness overlay, so it gets dimmed along with the video frame.
+- `src/player.h` / `src/player.c`: `player_draw(..., int show_statusbar)` — calls `statusbar_draw()` before brightness rect
+- `src/main.c`: removed separate `statusbar_draw()` call; passes `player.osd_visible` as flag
+
+### Diagnostic logging stripped (2026-04-04) ✓
+Removed `[diag]` block from `src/player.c:player_update()` and `[sws]` block from `src/video.c:video_sws_thread()`.
+
+### Package script updated (2026-04-04)
+`cross-compile/universal/package_gvu_universal.sh` changes:
+- Output filename: `GVU-universal-VERSION.zip` → `gvu_spruce_universal_vVERSION.zip`
+- Now includes `lib32_a30/` (patched SDL2 for A30 glibc 2.23)
+- Copies `icon.png` (not the old `gvu.png`/`gvu_sel.png`)
+- Excludes build artifacts (uses `*.so*` glob, removed stale `.bak` from libs32/)
+
+### Status (2026-04-04) — v0.2.0 built ✓
+- Mini Flip: video ✓, audio ✓, subtitles ✓, display ✓, statusbar dim ✓ — confirmed
+- A30: confirmed working after sws native-tex change ✓
+- Brick + Flip: unchanged from prior confirmed working state
+- `gvu_spruce_universal_v0.2.0.zip` (27MB) built and ready for tester distribution
+
+### Pending before GitHub push
+- Strip `flip180: Xms` + `pan: Xms` startup timing prints from `src/a30_screen.c`
+  (`s_flip180_logged` block ~line 197 and `s_pan_logged` block ~line 279 — both harmless but noisy)
+- Commit all changes to `universal` branch, create `v0.2.0` tag, push, upload zip as release asset
+
+---
+
+## Session 2026-04-04 — v0.2.1 Bug Fixes (INCOMPLETE — weekly token limit hit)
+
+### Context
+v0.2.0 tested on all devices. Multiple bugs found. Session goal: fix all bugs.
+Token budget exhausted partway through; not all bugs verified; no commit made yet.
+
+### Fixes applied this session (in source, not yet committed)
+
+#### 1. API key files — IMPLEMENTED ✓
+- `resources/api/SubDL_API.txt` + `TMDB_API.txt`: ship keys alongside binary, gitignored
+- `resources/api/readme.txt`: instructions for users who want to use their own keys
+- `src/theme.h`: declared `void config_load_api_keys(const char *api_dir)`
+- `src/theme.c`: `load_key_file()` + `config_load_api_keys()` — reads key files, only sets if key is currently empty (gvu.conf overrides)
+- `src/main.c`: calls `config_load_api_keys(g_app_dir + "/resources/api")` after `config_load`
+- `.gitignore`: added `resources/api/SubDL_API.txt` and `resources/api/TMDB_API.txt`
+
+#### 2. Cover scraping: posix_spawn empty environment — FIXED ✓
+**Root cause**: `posix_spawn` with `envp=NULL` spawns into a clean (empty) environment on glibc 2.23.
+`PATH` is unset in the child, so `wget` cannot be found. All API requests return "failed" instantly.
+This is the SAME bug documented in commit `8f2e61e` (fixed for subtitle subprocess by building
+an explicit `env_buf`). The scrape subprocess was the only one still using `envp=NULL`.
+**Fix** (`src/main.c`): Added `extern char **environ;` and changed the scrape `posix_spawn` call from
+`envp=NULL` to `envp=environ`. Verified working on A30: Rick and Morty cover fetched successfully.
+**Note**: commit `8f2e61e` should have been read first — this was a known/documented pattern.
+
+#### 3. Subtitle toast visible during playback — IMPLEMENTED (not yet verified)
+- `src/main.c`: removed `mode != MODE_PLAYBACK` guard on toast render
+- Added `sub_toast_msg[0] && SDL_GetTicks() < sub_toast_hide_at` to `has_ui` in both
+  portrait_direct (A30) and landscape_direct (Brick/Flip) paths
+
+#### 4. Volume OSD: Flip shows GVU bar (no hardware OSD), Brick suppresses it — IMPLEMENTED (not yet verified)
+- `src/platform.h` + `src/platform.c`: added `int g_hw_has_volume_osd` global
+- `src/platform.c`: Brick sets `g_hw_has_volume_osd = 1`; Flip leaves it 0
+- `src/player.c`: compile-time `#ifdef GVU_TRIMUI_BRICK` replaced with runtime `g_hw_has_volume_osd` check
+
+#### 5. A30 sleep/wake audio retry — IMPLEMENTED (not yet verified)
+- `src/audio.c`: replaced `SDL_AUDIO_ALLOW_FREQUENCY_CHANGE` (caused pitch shift) with
+  a retry loop (5 attempts, 200ms apart) using exact requested params
+
+#### 6. A30 startup timing prints stripped — DONE ✓
+- Removed `flip180: Xms` and `pan: Xms` debug prints from `src/a30_screen.c`
+
+### Fixes NOT yet applied
+- Mini Flip: multiple audio track crash — not investigated
+- V2/V3: audio silent — known (mmiyoo backend incompatibility), deferred
+- Brick/Flip sleep/wake pitch shift — not yet tested with audio retry fix
+
+### Build status
+- `gvu32` + `fetch_subs32` rebuilt (A30 builder, 2026-04-04) ✓
+- `gvu64` + `fetch_subs64` rebuilt (Brick builder, 2026-04-04) ✓
+- `gvu_spruce_universal_v0.2.1.zip` packaged ✓ (27MB)
+- Deployed `gvu32` to A30 at 192.168.1.62 ✓
+- **NOT committed** — commit + tag + GitHub release pending
+
+### Pending for next session (when weekly limit resets Monday 2026-04-07)
+1. Verify Flip volume OSD fix (need device test)
+2. Verify subtitle toast during playback (need device test)
+3. Verify sleep/wake audio retry fix on A30 + Brick/Flip
+4. Investigate Mini Flip multiple-audio-track crash
+5. Commit all changes to `universal` branch
+6. Create `v0.2.1` tag and GitHub release with zip

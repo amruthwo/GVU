@@ -27,6 +27,8 @@
 #define GVU_HW 1  /* running on hardware device, not desktop */
 #include <spawn.h>
 #include <sys/wait.h>
+#include <sys/resource.h>  /* setpriority — renice fetch_subs child */
+extern char **environ;  /* pass parent env to posix_spawn children */
 #endif
 
 #define FPS_CAP 60
@@ -73,6 +75,7 @@ typedef struct {
     char      video_path[1024];
     char      srt_dest[1024];
     pid_t     child_pid;
+    Uint32    spawn_tick;       /* SDL_GetTicks() when sub_spawn() was called */
     SubResult results[SUB_RESULT_MAX];
     int       result_count;
     int       result_sel;
@@ -155,7 +158,14 @@ static void sub_spawn(SubWorkflow *wf, char **argv_buf) {
         FILE *df = fopen(SUB_DONE_FILE, "w");
         if (df) { fprintf(df, "error: fetch_subs not found\n"); fclose(df); }
         wf->child_pid = 0;
+    } else {
+        /* Mildly deprioritise fetch_subs so video decode/audio threads get
+           first pick of the CPU.  nice=5 gives fetch_subs ~24% on a loaded
+           single-core Cortex-A7 (vs. 3% at nice=15 which caused TLS to time
+           out within the 45s window). */
+        setpriority(PRIO_PROCESS, (id_t)wf->child_pid, 5);
     }
+    wf->spawn_tick = SDL_GetTicks();
     posix_spawn_file_actions_destroy(&fa);
     if (logfd >= 0) close(logfd);
 }
@@ -337,6 +347,13 @@ int main(int argc, char *argv[]) {
     printf("GVU — platform: %s\n", platform_name(get_platform()));
 
     config_load("gvu.conf");
+    /* Load API keys from resources/api/ files; only fills keys missing from gvu.conf */
+    {
+        char api_dir[768];
+        snprintf(api_dir, sizeof(api_dir), "%s/resources/api",
+                 g_app_dir[0] ? g_app_dir : ".");
+        config_load_api_keys(api_dir);
+    }
     printf("Theme: %s\n", theme_get()->name);
     printf("First-run done: %d\n", config_firstrun_done());
 
@@ -439,6 +456,9 @@ int main(int argc, char *argv[]) {
                                                      "resources/default_cover.svg");
     if (!default_cover)
         default_cover = IMG_LoadTexture(renderer, "resources/default_cover.png");
+
+    SDL_Texture *default_folder = theme_render_folder_cover(renderer,
+                                                             "resources/default_folder.svg");
 
     printf("Scanning media library...\n");
     MediaLibrary lib;
@@ -780,7 +800,7 @@ int main(int argc, char *argv[]) {
                             posix_spawn_file_actions_addclose(&fa, logfd);
                         }
                         if (posix_spawn(&scrape_pid, "/bin/sh", &fa, NULL,
-                                        argv_buf, NULL) == 0) {
+                                        argv_buf, environ) == 0) {
                             scrape_active = 1;
                             fprintf(stderr, "scrape: pid %d folder '%s'\n",
                                     (int)scrape_pid, folder);
@@ -890,6 +910,9 @@ int main(int argc, char *argv[]) {
                     if (!default_cover)
                         default_cover = IMG_LoadTexture(renderer,
                                                         "resources/default_cover.png");
+                    if (default_folder) SDL_DestroyTexture(default_folder);
+                    default_folder = theme_render_folder_cover(renderer,
+                                                               "resources/default_folder.svg");
 #ifdef GVU_HW
                     theme_save_app_icon("resources/app_icon.svg", "icon.png");
 #endif
@@ -1375,6 +1398,15 @@ int main(int argc, char *argv[]) {
 #ifdef GVU_HW
         /* Poll for subtitle search / download completion */
         if ((sub_wf.state == SUB_SEARCHING || sub_wf.state == SUB_DOWNLOADING) &&
+                SDL_GetTicks() - sub_wf.spawn_tick > 45000U) {
+            /* fetch_subs likely crashed without writing the done file */
+            fprintf(stderr, "subtitle fetch: timeout after 45s, aborting\n");
+            if (sub_wf.child_pid > 0) kill(sub_wf.child_pid, SIGTERM);
+            sub_wf.child_pid = 0;
+            sub_wf.state = SUB_NONE;
+            snprintf(sub_toast_msg, sizeof(sub_toast_msg), "Subtitle search timed out");
+            sub_toast_hide_at = SDL_GetTicks() + 2500;
+        } else if ((sub_wf.state == SUB_SEARCHING || sub_wf.state == SUB_DOWNLOADING) &&
                 access(SUB_DONE_FILE, F_OK) == 0) {
             FILE *df = fopen(SUB_DONE_FILE, "r");
             char done_msg[256] = {0};
@@ -1453,7 +1485,8 @@ int main(int argc, char *argv[]) {
                              theme_get(), win_w, win_h - sbar_h);
             } else {
                 browser_draw(renderer, font, font_small,
-                             &state, &cache, &lib, default_cover,
+                             &state, &cache, &lib,
+                             default_folder ? default_folder : default_cover,
                              theme_get(), win_w, win_h - sbar_h);
             }
 
@@ -1462,9 +1495,8 @@ int main(int argc, char *argv[]) {
 
         } else {
             /* Playback mode: full-screen, status bar only when OSD is visible */
-            player_draw(renderer, font, font_small, &player, theme_get(), win_w, win_h);
-            if (player.osd_visible)
-                statusbar_draw(renderer, font, theme_get(), win_w, win_h);
+            player_draw(renderer, font, font_small, &player, theme_get(), win_w, win_h,
+                        player.osd_visible);
         }
 
         /* Overlay layers */
@@ -1629,9 +1661,8 @@ int main(int argc, char *argv[]) {
         else if (sub_wf.state == SUB_DOWNLOADING)
             sub_downloading_draw(renderer, font, theme_get(), win_w, win_h);
 
-        /* Subtitle download result toast (browser mode) */
-        if (sub_toast_msg[0] && SDL_GetTicks() < sub_toast_hide_at &&
-                mode != MODE_PLAYBACK) {
+        /* Subtitle search result toast (browser and playback modes) */
+        if (sub_toast_msg[0] && SDL_GetTicks() < sub_toast_hide_at) {
             const Theme *t = theme_get();
             int tw = 0, th = 0;
             TTF_SizeUTF8(font, sub_toast_msg, &tw, &th);
@@ -1673,7 +1704,8 @@ int main(int argc, char *argv[]) {
                       || player.state == PLAYER_PAUSED
                       || player.subtitle.count > 0
                       || player.brightness < 0.999f
-                      || sub_wf.state != SUB_NONE;
+                      || sub_wf.state != SUB_NONE
+                      || (sub_toast_msg[0] && SDL_GetTicks() < sub_toast_hide_at);
             osd_frame_cnt++;
             const Uint32 *osd_ptr = NULL;
             if (has_ui && osd_portrait_buf) {
@@ -1709,7 +1741,8 @@ int main(int argc, char *argv[]) {
                       || player.state == PLAYER_PAUSED
                       || player.subtitle.count > 0
                       || player.brightness < 0.999f
-                      || sub_wf.state != SUB_NONE;
+                      || sub_wf.state != SUB_NONE
+                      || (sub_toast_msg[0] && SDL_GetTicks() < sub_toast_hide_at);
             osd_frame_cnt++;
             const Uint32 *osd_ptr = NULL;
             if (has_ui && osd_landscape_buf) {
@@ -1753,8 +1786,9 @@ int main(int argc, char *argv[]) {
     browser_state_free(&state);
     cover_cache_free(&cache);
     library_free(&lib);
-    if (default_cover) SDL_DestroyTexture(default_cover);
-    if (help_cache)    SDL_DestroyTexture(help_cache);
+    if (default_cover)  SDL_DestroyTexture(default_cover);
+    if (default_folder) SDL_DestroyTexture(default_folder);
+    if (help_cache)     SDL_DestroyTexture(help_cache);
 
 cleanup:
     if (font_small) TTF_CloseFont(font_small);

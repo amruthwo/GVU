@@ -28,6 +28,10 @@ typedef struct {
     RGB icon_circle;  /* center circle fill */
     RGB icon_outer;   /* left and right arrows */
     RGB icon_center;  /* center arrow */
+    /* Folder cover colors (SVG recoloring for default_folder.svg) */
+    RGB folder_tab;    /* small tab / accent element */
+    RGB folder_screen; /* light panel */
+    RGB folder_body;   /* main folder body */
 } Theme;
 
 /* All built-in themes (NULL-terminated) */
@@ -79,6 +83,11 @@ const char *config_subdl_key(void);
    Call once at startup; silently ignores missing file. */
 void config_load(const char *path);
 
+/* Load API keys from resources/api/ files.
+   Reads SubDL_API.txt and TMDB_API.txt from api_dir.
+   Only sets a key if it is not already set (gvu.conf takes priority). */
+void config_load_api_keys(const char *api_dir);
+
 /* -------------------------------------------------------------------------
  * Default cover art — SVG recolored + rasterized per theme
  * ---------------------------------------------------------------------- */
@@ -89,6 +98,10 @@ void config_load(const char *path);
 #define COVER_SIZE 256
 
 SDL_Texture *theme_render_cover(SDL_Renderer *renderer, const char *svg_path);
+
+/* Rasterize default_folder.svg with the current theme's folder_* colors applied.
+   Returns a new SDL_Texture (caller must SDL_DestroyTexture when done). */
+SDL_Texture *theme_render_folder_cover(SDL_Renderer *renderer, const char *svg_path);
 
 /* Rasterize the current theme's cover SVG and save it as a PNG file.
    Used to keep the SpruceOS launcher icon (icon.png) in sync with the

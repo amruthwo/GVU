@@ -137,6 +137,9 @@ void player_sub_cycle_speed(Player *p);
 
 void player_close (Player *p);
 
-/* Render the current frame (or audio-only screen) to the window. */
+/* Render the current frame (or audio-only screen) to the window.
+   show_statusbar: if non-zero, draw the status bar before the brightness
+   overlay so it is dimmed uniformly with the rest of the frame. */
 void player_draw(SDL_Renderer *r, TTF_Font *font, TTF_Font *font_small,
-                 const Player *p, const Theme *theme, int win_w, int win_h);
+                 const Player *p, const Theme *theme, int win_w, int win_h,
+                 int show_statusbar);

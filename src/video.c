@@ -412,20 +412,29 @@ int video_open(VideoCtx *v, AVCodecParameters *cp, AVRational time_base,
     v->native_w   = cp->width;
     v->native_h   = cp->height;
 #ifdef GVU_A30
-    /* Pre-scale to the display's fit rect so SDL does a 1:1 blit instead of
-       a software bilinear scale on the full native resolution.  libswscale is
-       NEON-optimised; SDL's software renderer is not.  For 1280x720 this
-       reduces the SDL YUV->RGB + scale work from ~921k to ~230k pixels. */
     {
-        SDL_Rect fit = video_fit_rect(cp->width, cp->height, 640, 480);
-        v->tex_w = fit.w;
-        v->tex_h = fit.h;
-        /* Portrait-direct: if source is exactly 2× the fit-rect dimensions,
-           the custom kernel can replace libswscale entirely. The output frame
-           is portrait-oriented (width=tex_h, height=tex_w) and bypasses the
-           SDL texture upload + a30_flip() rotation. */
-        if (cp->width == 2 * fit.w && cp->height == 2 * fit.h)
-            v->portrait_direct = 1;
+        SDL_Rect fit = video_fit_rect(cp->width, cp->height, g_display_w, g_display_h);
+        if (g_display_rotation == 270) {
+            /* A30 portrait (90°CCW): pre-scale to fit rect in sws so SDL does
+               a 1:1 blit.  libswscale is NEON-optimised for downscale; SDL's
+               software renderer is not.  For 1280×720 this cuts output pixels
+               from ~921k to ~130k.
+               portrait_direct: custom NEON kernel replaces sws+a30_flip when
+               source is exactly 2× the fit-rect dimensions. */
+            v->tex_w = fit.w;
+            v->tex_h = fit.h;
+            if (cp->width == 2 * fit.w && cp->height == 2 * fit.h)
+                v->portrait_direct = 1;
+        } else {
+            /* Mini Flip / Mini family (rot=180) and other landscape devices:
+               keep native video resolution in the SDL texture.  sws then only
+               does YUV→BGRA format conversion (no resize), which is ~5× faster
+               than an upscale.  SDL_RenderCopy handles the scale to fit rect;
+               for typical SD content (480×360) this is much cheaper than having
+               sws upscale 480×360→746×560 (~40ms) which starves the 25fps budget. */
+            v->tex_w = cp->width;
+            v->tex_h = cp->height;
+        }
     }
 #elif defined(GVU_TRIMUI_BRICK)
     /* Pre-scale to fit 1024×768 so SDL blits at 1:1 (no software bilinear).
@@ -468,6 +477,13 @@ int video_open(VideoCtx *v, AVCodecParameters *cp, AVRational time_base,
     /* Allow the decoder to use intra-refresh, approximate IDCT, and other
        fast shortcuts that trade a little accuracy for speed. */
     v->codec_ctx->flags2 |= AV_CODEC_FLAG2_FAST;
+
+    /* Limit DPB to 3 frames (current + 2 refs).  The V3s (Mini Flip) and A30
+       have ~100 MB RAM shared with SpruceOS.  At 720p H.264 each reference
+       frame costs ~1.4 MB; the stream SPS can request 5-8 refs = 7-11 MB.
+       Capping at refs=2 saves 3-6 MB with no visible degradation on typical
+       film/TV content (which uses ref ≤ 2 for B-frame pairs). */
+    v->codec_ctx->refs = 2;
 #endif
 
     int ret = avcodec_open2(v->codec_ctx, codec, NULL);

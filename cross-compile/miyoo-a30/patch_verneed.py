@@ -24,8 +24,12 @@ def elf_hash(name):
     return h
 
 
-# Map old version strings to replacement (same length, null-padded)
+# Map old version strings to replacement (same length, null-padded).
+# All entries must map to a version available on the target device (glibc 2.17+).
+# Lengths must match exactly (null-pad shorter replacements).
 PATCH_MAP = {
+    b"GLIBC_2.25\x00": b"GLIBC_2.4\x00\x00",  # getrandom/getentropy (OpenSSL entropy)
+    b"GLIBC_2.27\x00": b"GLIBC_2.4\x00\x00",  # memfd_create etc.
     b"GLIBC_2.28\x00": b"GLIBC_2.4\x00\x00",
     b"GLIBC_2.29\x00": b"GLIBC_2.4\x00\x00",
 }

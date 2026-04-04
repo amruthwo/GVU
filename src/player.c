@@ -1,10 +1,14 @@
 #include "player.h"
 #include "hintbar.h"
 #include "statusbar.h"
+#include "platform.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdatomic.h>
 #include <math.h>
+#ifdef GVU_A30
+#include <malloc.h>  /* malloc_trim */
+#endif
 #include <libavformat/avformat.h>
 #include <libavutil/dict.h>
 #include "subtitle.h"
@@ -74,10 +78,9 @@ int player_open(Player *p, const char *path, SDL_Renderer *renderer,
 
     p->state  = PLAYER_STOPPED;
 #ifdef GVU_A30
-    /* Read Soft Volume Master to sync the OSD to the device level.
-       GVU never writes SVM — SpruceOS owns it.  audio.volume stays 1.0
-       (passthrough) so SVM is the sole attenuator for the whole session. */
-    {
+    if (g_display_rotation == 270) {
+        /* A30: amixer is available; read Soft Volume Master to sync OSD to
+           the device level. GVU never writes SVM — SpruceOS owns it. */
         float svm_vol = (prev_vol > 0.0f) ? prev_vol : 0.8f;
         FILE *amix = popen("/usr/bin/amixer sget 'Soft Volume Master' 2>/dev/null", "r");
         if (amix) {
@@ -94,8 +97,13 @@ int player_open(Player *p, const char *path, SDL_Renderer *renderer,
             pclose(amix);
         }
         p->volume = svm_vol;
+    } else {
+        /* Mini Flip / other armhf: no amixer; libpadsp routes OSS → MI_AO.
+           Start software volume at 1.0 (full passthrough). SpruceOS's system
+           volume (MI_AO level) is a separate layer outside GVU's control. */
+        p->volume = (prev_vol > 0.0f) ? prev_vol : 1.0f;
     }
-    atomic_store(&p->audio.volume, 1.0f);   /* passthrough — SpruceOS controls SVM */
+    atomic_store(&p->audio.volume, p->volume);
 #else
     p->volume = (prev_vol > 0.0f) ? prev_vol : 1.0f;
     atomic_store(&p->audio.volume, p->volume);
@@ -144,11 +152,7 @@ void player_set_volume(Player *p, float vol) {
     if (vol < 0.0f) vol = 0.0f;
     if (vol > 1.0f) vol = 1.0f;
     p->volume = vol;
-    /* On A30, audio.volume is always 1.0 (passthrough).  SpruceOS controls
-       the Soft Volume Master hardware attenuator.  p->volume is OSD-only. */
-#ifndef GVU_A30
     atomic_store(&p->audio.volume, vol);
-#endif
     p->vol_osd_visible = 1;
     p->vol_osd_hide_at = SDL_GetTicks() + 1500;
 }
@@ -165,12 +169,7 @@ void player_volume_dn(Player *p) { player_set_volume(p, p->volume - 0.1f); }
 
 void player_toggle_mute(Player *p) {
     p->muted = !p->muted;
-#ifdef GVU_A30
-    /* Mute via software silence; SVM is untouched. */
-    atomic_store(&p->audio.volume, p->muted ? 0.0f : 1.0f);
-#else
     atomic_store(&p->audio.volume, p->muted ? 0.0f : p->volume);
-#endif
     p->vol_osd_visible = 1;
     p->vol_osd_hide_at = SDL_GetTicks() + 1500;
 }
@@ -346,6 +345,13 @@ void player_close(Player *p) {
 #endif
     sub_free(&p->subtitle);
     p->state = PLAYER_STOPPED;
+#ifdef GVU_A30
+    /* After freeing the H.264 DPB and all FFmpeg buffers, glibc often keeps
+       a large free-list pool on the heap rather than returning pages to the
+       OS.  malloc_trim(0) forces it to release all it can back to the kernel
+       so the next avcodec_open2 (another ~10 MB DPB) doesn't trigger OOM. */
+    malloc_trim(0);
+#endif
 }
 
 /* -------------------------------------------------------------------------
@@ -766,7 +772,8 @@ static void draw_brightness_bar(SDL_Renderer *r, TTF_Font *font,
 }
 
 void player_draw(SDL_Renderer *r, TTF_Font *font, TTF_Font *font_small,
-                 const Player *p, const Theme *t, int win_w, int win_h) {
+                 const Player *p, const Theme *t, int win_w, int win_h,
+                 int show_statusbar) {
 #ifdef GVU_TRIMUI_BRICK
     /* Clear with alpha=0 so empty pixels are transparent for OSD compositing
        in brick_flip_video().  brick_flip() forces alpha=0xFF on output. */
@@ -830,7 +837,12 @@ void player_draw(SDL_Renderer *r, TTF_Font *font, TTF_Font *font_small,
         draw_osd(r, font, font_small, p, t, win_w, win_h);
     }
 
-    /* Brightness dimming overlay — drawn over everything except the HUD bars.
+    /* Status bar (wifi/battery/clock): draw before the brightness overlay so
+       it is dimmed together with the rest of the frame. */
+    if (show_statusbar)
+        statusbar_draw(r, font, t, win_w, win_h);
+
+    /* Brightness dimming overlay — drawn over video + OSD + status bar.
      * Skip for landscape_direct on Brick: blending over alpha=0 pixels would
      * make them appear opaque (covering video).  Brightness is applied
      * per-pixel in brick_flip_video() instead. */
@@ -849,9 +861,9 @@ void player_draw(SDL_Renderer *r, TTF_Font *font, TTF_Font *font_small,
     }
 
 #ifdef GVU_TRIMUI_BRICK
-    /* Brick has its own system volume OSD — don't duplicate it.
-       Still show the MUTE indicator so the user knows audio is silenced. */
-    if (p->muted)
+    /* Brick has its own system volume OSD — don't show GVU's duplicate.
+       Flip (same binary) has no hardware OSD, so show GVU's bar there. */
+    if (g_hw_has_volume_osd ? p->muted : (p->vol_osd_visible || p->muted))
 #else
     if (p->vol_osd_visible || p->muted)
 #endif

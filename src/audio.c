@@ -265,6 +265,8 @@ int audio_open(AudioCtx *a, AVCodecParameters *codec_params,
         return -1;
     }
     a->out_rate = got.freq;
+    fprintf(stderr, "audio_open: want=%dHz got=%dHz fmt=%d ch=%d\n",
+            AUDIO_OUT_RATE, got.freq, got.format, got.channels);
 
     /* Set up swresample: input = file's format, output = S16 stereo at got.freq */
     AVChannelLayout out_layout;
@@ -437,28 +439,20 @@ void audio_wake(AudioCtx *a) {
         .userdata = a,
     };
     SDL_AudioSpec got;
-    a->dev = SDL_OpenAudioDevice(NULL, 0, &want, &got,
-                                 SDL_AUDIO_ALLOW_FREQUENCY_CHANGE);
-    if (!a->dev)
-        fprintf(stderr, "audio_wake: SDL_OpenAudioDevice failed: %s\n", SDL_GetError());
-    else
-        a->out_rate = got.freq;
-
-#ifdef GVU_A30
-    {
-        static char *child_argv[] = {
-            "sh", "-c",
-            "amixer sset 'Soft Volume Master' 255 >/dev/null 2>&1",
-            NULL
-        };
-        static char *child_env[] = {
-            "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-            NULL
-        };
-        pid_t pid;
-        posix_spawn(&pid, "/bin/sh", NULL, NULL, child_argv, child_env);
+    /* Don't allow frequency change — a different rate causes pitch shift.
+       On A30 the OSS device may not be immediately ready after wake; retry
+       a few times with brief delays before giving up. */
+    int attempts = 5;
+    while (attempts-- > 0) {
+        a->dev = SDL_OpenAudioDevice(NULL, 0, &want, &got, 0);
+        if (a->dev) break;
+        fprintf(stderr, "audio_wake: SDL_OpenAudioDevice failed (%d left): %s\n",
+                attempts, SDL_GetError());
+        SDL_Delay(200);
     }
-#endif
+    if (!a->dev)
+        fprintf(stderr, "audio_wake: giving up — audio will be silent\n");
+
 }
 
 double audio_get_clock(const AudioCtx *a) {

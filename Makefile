@@ -35,9 +35,11 @@ A30_CFLAGS  = -Wall -Wextra -std=c11 -O2 -D_POSIX_C_SOURCE=200809L \
               -march=armv7-a -mfpu=neon-vfpv3 -mfloat-abi=hard \
               $(shell pkg-config --cflags sdl2 SDL2_image SDL2_ttf \
                   libavformat libavcodec libavutil libswresample libswscale)
-# Static linking: all SDL2+FFmpeg libs baked into the binary.
-# gvu32 NEEDED at runtime: only libc, libm, libpthread, libdl, libasound.so.2
-# (SDL2 dlopen's libasound at runtime — A30 has it natively).
+# SDL2 is linked DYNAMICALLY — libSDL2-2.0.so.0 ships in lib32/.
+# On A30/Flip/Brick our ALSA-backed SDL2 is loaded; on MiyooMini launch.sh
+# prepends /customer/lib so SpruceOS's MI_AO SDL2 is loaded instead.
+# SDL2_image, SDL2_ttf, and FFmpeg remain fully static.
+# gvu32 NEEDED at runtime: libc, libm, libpthread, libdl, libSDL2-2.0.so.0
 A30_LDFLAGS = -Wl,--start-group \
               $(shell pkg-config --static --libs sdl2 SDL2_image SDL2_ttf \
                   libavformat libavcodec libavutil libswresample libswscale) \

@@ -28,12 +28,15 @@ ENV PKG_CONFIG_LIBDIR=/opt/a30/lib/pkgconfig
 ENV PKG_CONFIG_SYSROOT_DIR=
 
 # ---- SDL2 2.26.5 — dummy video + ALSA audio (dlopen at runtime) ----------
+# Built with --enable-shared so the binary can load SpruceOS's MI_AO SDL2
+# on MiyooMini at runtime. Our libSDL2-2.0.so.0 (ALSA backend) ships in
+# lib32/ and is used on A30/Brick/Flip; MiyooMini loads /customer/lib's SDL2.
 RUN wget -q https://libsdl.org/release/SDL2-2.26.5.tar.gz && \
     tar xf SDL2-2.26.5.tar.gz && \
     mkdir SDL2-2.26.5/bld && cd SDL2-2.26.5/bld && \
     ../configure \
         --host=$CROSS --prefix=$PREFIX \
-        --enable-static --disable-shared \
+        --enable-static --enable-shared \
         --disable-video-opengl \
         --disable-video-opengles \
         --disable-video-x11 \

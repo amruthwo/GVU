@@ -1,15 +1,26 @@
 # Build outputs
 gvu
 gvu32
+gvu64
 build/
+cross-compile/deps/
+
+# Release packages
+*.zip
 
 # Runtime / generated files
 gvu.conf
 gvu.conf.bak
 icon.png
 
-# TMDB API key — never commit, included in release packages via package_gvu_a30.sh
+# TMDB API key — never commit, included in release packages via packaging scripts
 .tmdb_key
 
 # SubDL API key — never commit
 SubDL_API_*
+.subdl_key
+
+# API key files in resources/api/ — gitignored when they contain actual keys
+# Empty placeholder versions (readme.txt only) can be committed
+resources/api/SubDL_API.txt
+resources/api/TMDB_API.txt

@@ -74,7 +74,12 @@ static int      s_fb_back_yoff   = 0;       /* back buffer page we write to (row
  * displayed page) eliminates this wait entirely: flip drops from ~28ms to
  * ~3ms, the main loop runs at 60fps, and the pipeline reaches ~87% speed on
  * 720p 60fps content.  Tearing is the trade-off; for video it is subtle. */
-static int      s_fb_pan_disabled = 1;      /* 1 = direct write, no FBIOPAN_DISPLAY */
+/* s_fb_pan_disabled is set in a30_screen_init() based on the platform:
+ *   rotation=270 (A30): disabled — FBIOPAN_DISPLAY blocks ~28ms on A30's sunxi driver,
+ *                        worse than tearing. Direct write to displayed page instead.
+ *   rotation=180 (Mini Flip): enabled — V3s/SigmaStar driver is fast; page-flip
+ *                        eliminates tearing. */
+static int      s_fb_pan_disabled = 1;      /* default; overridden by a30_screen_init */
 
 static int      s_input_fd    = -1;
 
@@ -118,9 +123,16 @@ int a30_screen_init(void) {
     s_fb_yoffset   = (int)vinfo.yoffset;
     s_fb_back_yoff = (s_fb_yoffset == 0) ? g_panel_h : 0;
 
-    fprintf(stderr, "a30_screen: fb0 %dx%d bpp=%d stride=%d yoff=%d back_yoff=%d\n",
+    /* FBIOPAN_DISPLAY fails silently on V3s/SigmaStar (Mini Flip) — the display
+     * controller uses a different pan mechanism. Keep direct write (pan disabled)
+     * for all A30-family platforms. Tearing is acceptable for video; NEON flip
+     * keeps it under 2ms so the frame budget impact is minimal. */
+    s_fb_pan_disabled = 1;
+
+    fprintf(stderr, "a30_screen: fb0 %dx%d bpp=%d stride=%d yoff=%d back_yoff=%d pan=%s\n",
             vinfo.xres, vinfo.yres, vinfo.bits_per_pixel,
-            s_fb_stride, s_fb_yoffset, s_fb_back_yoff);
+            s_fb_stride, s_fb_yoffset, s_fb_back_yoff,
+            s_fb_pan_disabled ? "off" : "on");
 
     /* --- Open evdev input --- */
     s_input_fd = open(g_input_dev, O_RDONLY | O_NONBLOCK);
@@ -178,14 +190,40 @@ void a30_flip(SDL_Surface *surface) {
         }
 #endif
     } else if (g_display_rotation == 180) {
-        /* 180° rotation (upside-down panels, e.g. some Miyoo Mini variants).
-         * dst row r = src row (g_panel_h-1-r), pixels mirrored left-to-right. */
+        /* 180° rotation (upside-down panels, e.g. Miyoo Mini Flip/V4).
+         * dst row r = src row (g_panel_h-1-r), pixels reversed left-to-right.
+         * 752 = 8×94 — inner loop is exact with no tail. */
+#ifdef __ARM_NEON__
+        const uint32x4_t alpha_v = vdupq_n_u32(0xFF000000u);
+        for (int r = 0; r < g_panel_h; r++) {
+            const Uint32 *in  = src + (size_t)(g_panel_h - 1 - r) * (size_t)pitch;
+            Uint32       *out = dst + (size_t)r * (size_t)s_fb_stride;
+            /* Read 8 pixels from the end of the source row, reverse them,
+             * store to the front of the destination row. Repeat backwards. */
+            int c = g_panel_w - 8;
+            while (c >= 0) {
+                uint32x4_t lo = vld1q_u32(in + c);      /* [a,b,c,d] */
+                uint32x4_t hi = vld1q_u32(in + c + 4);  /* [e,f,g,h] */
+                /* Reverse each group of 4: vrev64q_u32 swaps pairs within 64-bit lanes,
+                 * then vcombine swaps the two lanes → full reversal. */
+                uint32x4_t rlo = vrev64q_u32(lo);
+                rlo = vcombine_u32(vget_high_u32(rlo), vget_low_u32(rlo)); /* [d,c,b,a] */
+                uint32x4_t rhi = vrev64q_u32(hi);
+                rhi = vcombine_u32(vget_high_u32(rhi), vget_low_u32(rhi)); /* [h,g,f,e] */
+                vst1q_u32(out,     vorrq_u32(rhi, alpha_v)); /* out[0..3] = [h,g,f,e] */
+                vst1q_u32(out + 4, vorrq_u32(rlo, alpha_v)); /* out[4..7] = [d,c,b,a] */
+                out += 8;
+                c   -= 8;
+            }
+        }
+#else
         for (int r = 0; r < g_panel_h; r++) {
             const Uint32 *in  = src + (size_t)(g_panel_h - 1 - r) * (size_t)pitch;
             Uint32       *out = dst + (size_t)r * (size_t)s_fb_stride;
             for (int c = 0; c < g_panel_w; c++)
                 out[c] = in[g_panel_w - 1 - c] | 0xFF000000u;
         }
+#endif
     } else {
         /* 90° CCW rotation (A30 and other portrait-panel devices).
          * src: g_display_w × g_display_h (landscape)
@@ -437,7 +475,15 @@ void a30_screen_wake(void) {
 }
 
 /* -------------------------------------------------------------------------
- * Key mapping table
+ * Key mapping tables
+ *
+ * A30 and Miyoo Mini family share the same evdev key codes for most buttons
+ * but differ for the shoulder buttons:
+ *   A30:        L1=KEY_TAB  R1=KEY_BACKSPACE  L2=KEY_E  R2=KEY_T
+ *   Mini/Flip:  L1=KEY_E    R1=KEY_T          L2=KEY_TAB  R2=KEY_BACKSPACE
+ *
+ * s_keymap is set to the appropriate table in a30_screen_init() based on
+ * g_display_rotation (270 = A30 portrait, else Mini landscape/180).
  * ---------------------------------------------------------------------- */
 
 typedef struct {
@@ -445,28 +491,55 @@ typedef struct {
     SDL_Keycode sdl_sym;
 } KeyMap;
 
-static const KeyMap s_keymap[] = {
-    { KEY_SPACE,     SDLK_SPACE    },   /* A        */
-    { KEY_LEFTCTRL,  SDLK_LCTRL   },   /* B        */
-    { KEY_LEFTSHIFT, SDLK_LSHIFT  },   /* X        */
-    { KEY_LEFTALT,   SDLK_LALT    },   /* Y        */
-    { KEY_TAB,       SDLK_PAGEUP  },   /* L1       */
-    { KEY_BACKSPACE, SDLK_PAGEDOWN},   /* R1       */
-    { KEY_E,         SDLK_COMMA   },   /* L2       */
-    { KEY_T,         SDLK_PERIOD  },   /* R2       */
-    { KEY_RIGHTCTRL, SDLK_RCTRL   },   /* SELECT   */
-    { KEY_ENTER,     SDLK_RETURN  },   /* START    */
-    { KEY_ESC,       SDLK_ESCAPE  },   /* MENU     */
-    { KEY_UP,        SDLK_UP      },   /* D-pad UP */
-    { KEY_DOWN,      SDLK_DOWN    },   /* D-pad DN */
-    { KEY_LEFT,      SDLK_LEFT    },   /* D-pad LT */
+static const KeyMap s_keymap_a30[] = {
+    { KEY_SPACE,      SDLK_SPACE    },   /* A        */
+    { KEY_LEFTCTRL,   SDLK_LCTRL   },   /* B        */
+    { KEY_LEFTSHIFT,  SDLK_LSHIFT  },   /* X        */
+    { KEY_LEFTALT,    SDLK_LALT    },   /* Y        */
+    { KEY_TAB,        SDLK_PAGEUP  },   /* L1       */
+    { KEY_BACKSPACE,  SDLK_PAGEDOWN},   /* R1       */
+    { KEY_E,          SDLK_COMMA   },   /* L2       */
+    { KEY_T,          SDLK_PERIOD  },   /* R2       */
+    { KEY_RIGHTCTRL,  SDLK_RCTRL   },   /* SELECT   */
+    { KEY_ENTER,      SDLK_RETURN  },   /* START    */
+    { KEY_ESC,        SDLK_ESCAPE  },   /* MENU     */
+    { KEY_UP,         SDLK_UP      },   /* D-pad UP */
+    { KEY_DOWN,       SDLK_DOWN    },   /* D-pad DN */
+    { KEY_LEFT,       SDLK_LEFT    },   /* D-pad LT */
     { KEY_RIGHT,      SDLK_RIGHT   },   /* D-pad RT */
-    { KEY_VOLUMEUP,   SDLK_EQUALS },   /* Vol+     */
-    { KEY_VOLUMEDOWN, SDLK_MINUS  },   /* Vol-     */
-    { 0,              0           },   /* sentinel */
+    { KEY_VOLUMEUP,   SDLK_EQUALS  },   /* Vol+     */
+    { KEY_VOLUMEDOWN, SDLK_MINUS   },   /* Vol-     */
+    { 0,              0            },   /* sentinel */
 };
 
+/* Miyoo Mini family (Mini, Plus, V4, Flip): L1/R1 and L2/R2 evdev codes
+ * are swapped compared to A30. Physical L1 → KEY_E, R1 → KEY_T,
+ * L2 → KEY_TAB, R2 → KEY_BACKSPACE. */
+static const KeyMap s_keymap_mini[] = {
+    { KEY_SPACE,      SDLK_SPACE    },   /* A        */
+    { KEY_LEFTCTRL,   SDLK_LCTRL   },   /* B        */
+    { KEY_LEFTSHIFT,  SDLK_LSHIFT  },   /* X        */
+    { KEY_LEFTALT,    SDLK_LALT    },   /* Y        */
+    { KEY_E,          SDLK_PAGEUP  },   /* L1       */
+    { KEY_T,          SDLK_PAGEDOWN},   /* R1       */
+    { KEY_TAB,        SDLK_COMMA   },   /* L2       */
+    { KEY_BACKSPACE,  SDLK_PERIOD  },   /* R2       */
+    { KEY_RIGHTCTRL,  SDLK_RCTRL   },   /* SELECT   */
+    { KEY_ENTER,      SDLK_RETURN  },   /* START    */
+    { KEY_ESC,        SDLK_ESCAPE  },   /* MENU     */
+    { KEY_UP,         SDLK_UP      },   /* D-pad UP */
+    { KEY_DOWN,       SDLK_DOWN    },   /* D-pad DN */
+    { KEY_LEFT,       SDLK_LEFT    },   /* D-pad LT */
+    { KEY_RIGHT,      SDLK_RIGHT   },   /* D-pad RT */
+    { KEY_VOLUMEUP,   SDLK_EQUALS  },   /* Vol+     */
+    { KEY_VOLUMEDOWN, SDLK_MINUS   },   /* Vol-     */
+    { 0,              0            },   /* sentinel */
+};
+
+static const KeyMap *s_keymap = NULL;
+
 static SDL_Keycode lookup_keycode(int linux_code) {
+    if (!s_keymap) return SDLK_UNKNOWN;
     for (int i = 0; s_keymap[i].linux_code; i++) {
         if (s_keymap[i].linux_code == linux_code)
             return s_keymap[i].sdl_sym;
@@ -509,6 +582,13 @@ static void push_key(SDL_Keycode sym, int repeat) {
 
 void a30_poll_events(void) {
     if (s_input_fd < 0) return;
+
+    /* One-time keymap selection: 270° = A30 layout, else Mini family layout. */
+    if (!s_keymap) {
+        s_keymap = (g_display_rotation == 270) ? s_keymap_a30 : s_keymap_mini;
+        fprintf(stderr, "a30_screen: using %s keymap\n",
+                (g_display_rotation == 270) ? "A30" : "Mini");
+    }
 
     struct input_event ev;
     while (read(s_input_fd, &ev, sizeof(ev)) == sizeof(ev)) {

@@ -787,18 +787,30 @@ static void draw_season_list(SDL_Renderer *renderer, TTF_Font *font,
 
             int text_x = padding + thumb_w + padding;
             int text_w = win_w - text_x - padding;
-            RGB tc = sel ? t->highlight_text : t->text;
-            draw_text(renderer, font, show->seasons[i].name,
-                      text_x, y + row_h / 4 - TTF_FontHeight(font) / 2,
-                      text_w, tc.r, tc.g, tc.b);
 
-            char ep_buf[32];
-            snprintf(ep_buf, sizeof(ep_buf), "%d episode%s",
+            char season_label[128];
+            snprintf(season_label, sizeof(season_label), "%s - %d episode%s",
+                     show->seasons[i].name,
                      show->seasons[i].file_count,
                      show->seasons[i].file_count == 1 ? "" : "s");
-            draw_text(renderer, font_small, ep_buf,
-                      text_x, y + row_h * 3 / 5, text_w,
-                      t->secondary.r, t->secondary.g, t->secondary.b);
+
+            RGB tc = sel ? t->highlight_text : t->text;
+            int fh = TTF_FontHeight(font);
+            int label_y = y + (row_h - fh) / 2;
+
+            if (has_backdrop && !sel) {
+                int pill_pad = sc(8, win_w);
+                int tw = 0, dummy = 0;
+                TTF_SizeUTF8(font, season_label, &tw, &dummy);
+                int pw = tw + pill_pad * 2;
+                if (pw > win_w - (text_x - pill_pad) - padding) pw = win_w - (text_x - pill_pad) - padding;
+                fill_pill_bg(renderer, text_x - pill_pad, label_y - sc(3, win_w),
+                             pw, fh + sc(6, win_w),
+                             t->background.r, t->background.g, t->background.b, 170);
+            }
+
+            draw_text(renderer, font, season_label,
+                      text_x, label_y, text_w, tc.r, tc.g, tc.b);
         }
 
     } else {

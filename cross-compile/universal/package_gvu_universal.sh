@@ -14,7 +14,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 VERSION="${1:-dev}"
-OUT_ZIP="$REPO_ROOT/GVU-universal-${VERSION}.zip"
+OUT_ZIP="$REPO_ROOT/gvu_spruce_universal_v${VERSION}.zip"
 STAGE="$REPO_ROOT/build/universal-stage"
 
 echo "=== Packaging GVU universal ${VERSION} ==="
@@ -24,6 +24,7 @@ rm -rf "$STAGE"
 mkdir -p "$STAGE/GVU/bin32"
 mkdir -p "$STAGE/GVU/bin64"
 mkdir -p "$STAGE/GVU/lib32"
+mkdir -p "$STAGE/GVU/lib32_a30"
 mkdir -p "$STAGE/GVU/lib64"
 mkdir -p "$STAGE/GVU/resources"
 
@@ -36,11 +37,17 @@ chmod +x "$STAGE/GVU/bin32/gvu" "$STAGE/GVU/bin64/gvu" \
          "$STAGE/GVU/bin32/fetch_subs" "$STAGE/GVU/bin64/fetch_subs"
 
 # Shared libraries
+# lib32/     — unpatched SDL2 for Mini Flip/V4 (glibc 2.28+)
+# lib32_a30/ — VERNEED-patched SDL2 for A30 (glibc 2.23); launch.sh prepends this for PLATFORM=A30
+# lib64/     — aarch64 libs for Brick/Flip/Smart Pro
 if [ -d "$REPO_ROOT/build/libs32" ]; then
-    cp "$REPO_ROOT/build/libs32/"* "$STAGE/GVU/lib32/" 2>/dev/null || true
+    cp "$REPO_ROOT/build/libs32/"*.so* "$STAGE/GVU/lib32/" 2>/dev/null || true
+fi
+if [ -d "$REPO_ROOT/build/libs32_a30" ]; then
+    cp "$REPO_ROOT/build/libs32_a30/"*.so* "$STAGE/GVU/lib32_a30/" 2>/dev/null || true
 fi
 if [ -d "$REPO_ROOT/build/libs64" ]; then
-    cp "$REPO_ROOT/build/libs64/"* "$STAGE/GVU/lib64/" 2>/dev/null || true
+    cp "$REPO_ROOT/build/libs64/"*.so* "$STAGE/GVU/lib64/" 2>/dev/null || true
 fi
 
 # Launch script and config
@@ -51,12 +58,10 @@ chmod +x "$STAGE/GVU/launch.sh"
 # Resources (fonts, icons, fetch_subtitles.py, etc.)
 cp -r "$REPO_ROOT/resources/." "$STAGE/GVU/resources/"
 
-# Icons (if present)
-for icon in gvu.png gvu_sel.png; do
-    if [ -f "$REPO_ROOT/$icon" ]; then
-        cp "$REPO_ROOT/$icon" "$STAGE/GVU/"
-    fi
-done
+# Icon
+if [ -f "$REPO_ROOT/icon.png" ]; then
+    cp "$REPO_ROOT/icon.png" "$STAGE/GVU/"
+fi
 
 # Create zip
 cd "$STAGE"

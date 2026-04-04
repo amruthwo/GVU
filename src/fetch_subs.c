@@ -24,7 +24,28 @@
 #include <ctype.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <errno.h>
 #include <sys/stat.h>
+
+/* getentropy is absent on glibc < 2.25 (e.g. Miyoo A30).
+ * OpenSSL uses it for entropy; provide it here so the linker resolves the
+ * reference locally and does not create a dynamic dependency on libc. */
+#if defined(__linux__)
+int getentropy(void *buf, size_t buflen);
+int getentropy(void *buf, size_t buflen) {
+    if (buflen > 256) { errno = EIO; return -1; }
+    int fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return -1;
+    size_t got = 0;
+    while (got < buflen) {
+        ssize_t n = read(fd, (char *)buf + got, buflen - got);
+        if (n <= 0) { close(fd); errno = EIO; return -1; }
+        got += (size_t)n;
+    }
+    close(fd);
+    return 0;
+}
+#endif
 #include <regex.h>
 #include <strings.h>      /* strcasecmp, strncasecmp */
 #include <curl/curl.h>
@@ -40,19 +61,16 @@
 /* Fallback CA bundle on SpruceOS devices that lack a shipped cacert.pem */
 #define SPRUCE_CA_BUNDLE "/mnt/SDCARD/spruce/etc/ca-certificates.crt"
 
-/* ── CA bundle (loaded into memory for CURLOPT_CAINFO_BLOB) ───────────────── */
+/* ── CA bundle path ────────────────────────────────────────────────────────── */
 
-/* mbedTLS backend in libcurl does not reliably support CURLOPT_CAINFO (file
-   path) on some platforms — reads succeed but mbedtls_x509_crt_parse_file()
-   returns an error.  Use CURLOPT_CAINFO_BLOB (in-memory PEM) instead, which
-   goes through mbedtls_x509_crt_parse() and works correctly. */
+/* OpenSSL backend supports CURLOPT_CAINFO (file path) directly.
+   Just find which CA bundle file exists and store the path. */
 
-static char  *g_ca_data = NULL;
-static size_t g_ca_size = 0;
+static const char *g_ca_path = NULL;
 
 static void ca_bundle_load(void)
 {
-    const char *paths[2];
+    static const char *paths[2];
     paths[0] = getenv("GVU_CACERT_PATH");
     paths[1] = SPRUCE_CA_BUNDLE;
     for (int i = 0; i < 2; i++) {
@@ -60,24 +78,12 @@ static void ca_bundle_load(void)
         if (!p || !p[0]) continue;
         FILE *f = fopen(p, "rb");
         if (!f) continue;
-        fseek(f, 0, SEEK_END);
-        long sz = ftell(f);
-        rewind(f);
-        if (sz <= 0) { fclose(f); continue; }
-        char *buf = malloc((size_t)sz + 1);  /* +1 for null terminator (mbedTLS PEM parser requires it) */
-        if (!buf) { fclose(f); continue; }
-        if (fread(buf, 1, (size_t)sz, f) == (size_t)sz) {
-            buf[sz] = '\0';
-            g_ca_data = buf;
-            g_ca_size = (size_t)sz + 1;  /* include null terminator in blob length */
-            fprintf(stderr, "ca: loaded %s (%ld bytes)\n", p, sz);
-            fclose(f);
-            return;
-        }
-        free(buf);
         fclose(f);
+        g_ca_path = p;
+        fprintf(stderr, "ca: using %s\n", p);
+        return;
     }
-    fprintf(stderr, "ca: WARNING — no CA bundle loaded, SSL peer verification will fail\n");
+    fprintf(stderr, "ca: WARNING — no CA bundle found, SSL peer verification will fail\n");
 }
 
 /* ── HTTP response buffer ──────────────────────────────────────────────────── */
@@ -98,8 +104,6 @@ static size_t membuf_write_cb(void *ptr, size_t sz, size_t n, void *ud)
 }
 
 static void membuf_free(MemBuf *mb) { free(mb->data); mb->data = NULL; mb->size = 0; }
-
-/* ── CA bundle path ───────────────────────────────────────────────────────── */
 
 /* ── URL encoding ─────────────────────────────────────────────────────────── */
 
@@ -127,12 +131,20 @@ static void url_encode(const char *in, char *out, size_t out_sz)
 static void curl_setup_common(CURL *curl, long timeout_s)
 {
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    /* Our static OpenSSL 1.1.1w (linux-armv4 target) fails ECDSA chain
+       verification on ARM32 even with a valid CA bundle — the SpruceOS wget
+       (dynamic OpenSSL) verifies the same chain fine.  For subtitle downloads
+       (low-sensitivity public data) skipping chain verification is acceptable.
+       Hostname verification is kept at the libcurl level as a sanity check. */
+#ifdef GVU_A30
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+#else
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
-    if (g_ca_data) {
-        struct curl_blob blob = { g_ca_data, g_ca_size, CURL_BLOB_NOCOPY };
-        curl_easy_setopt(curl, CURLOPT_CAINFO_BLOB, &blob);
-    }
+    if (g_ca_path)
+        curl_easy_setopt(curl, CURLOPT_CAINFO, g_ca_path);
+#endif
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "GVU/1.0");
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 8L);  /* fail fast if host unreachable */
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout_s);
