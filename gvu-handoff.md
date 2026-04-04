@@ -245,7 +245,7 @@ On slow devices (A30, Mini Flip) the video decode thread can't always keep up wi
 ### Miyoo Flip (V1/V2)
 
 - **Binary:** `gvu64`
-- **Display:** 1024×768. Single-page fb0 — `FBIOPAN_DISPLAY` will crash. SDL2's DRM/KMS backend provides vsync instead.
+- **Display:** 640×480. Single-page fb0 — `FBIOPAN_DISPLAY` will crash. SDL2's DRM/KMS backend provides vsync instead.
 - **Audio:** ALSA, `plughw:0,0`. `launch.sh` writes a `.asoundrc` to `$HOME` before launch. Without it, ALSA fails with "device busy" because PyUI holds hw:0,0 exclusively.
 - **App dir on device:** `/mnt/SDCARD/App/GVU/`
 

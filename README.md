@@ -18,7 +18,7 @@ GVU is a native video player for SpruceOS devices. It has a three-level media br
 |---|---|
 | Miyoo A30 | 640×480, ARMv7. Works great. |
 | TrimUI Brick / Hammer | 1024×768, AArch64. Works great. |
-| Miyoo Flip V1/V2 | 1024×768, AArch64. Works great. |
+| Miyoo Flip V1/V2 | 640×480, AArch64. Works great. |
 | Miyoo Mini Flip (V4) | 752×560, ARMv7. Audio via SigmaStar bridge. |
 | Miyoo Mini V2/V3 | 640×480, ARMv7. Video works; audio broken on some firmware. |
 
