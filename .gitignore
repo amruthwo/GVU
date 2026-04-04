@@ -8,6 +8,9 @@ cross-compile/deps/
 # Release packages
 *.zip
 
+# Local development notes — not for the repo
+gvu-universal-notes.md
+
 # Runtime / generated files
 gvu.conf
 gvu.conf.bak
