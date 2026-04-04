@@ -746,7 +746,7 @@ The app ships as a zip that extracts to `/mnt/SDCARD/App/GVU/`. It launches via 
 
 ### If you want to move it to Emu/MEDIA/
 
-SpruceOS's `Emu/MEDIA/` folder is the standard location for video players that should appear in the media browser. Moving GVU there would mean it appears as the default video handler rather than a standalone app.
+SpruceOS's `Emu/MEDIA/` folder where FFPLAY currently lives. Moving GVU there would mean it appears as the default video handler rather than a standalone app.
 
 What changes:
 - `launch.sh` would need to accept a file path as `$1` (SpruceOS passes the selected file to the emulator binary)
