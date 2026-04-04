@@ -42,7 +42,7 @@ On first launch, GVU scans your media folders and builds its library. Make sure 
 - **Seek** — frame-accurate, ±10s / ±60s by default
 - **Watch history** — remembers where you left off across all shows
 - **Subtitles** — load local .srt files or search and download from SubDL / Podnapisi
-- **Themes** — ten color themes, cycle with the hint bar
+- **Themes** — ten color themes, cycle with R1 in the browser
 - **OSD** — progress bar, current time, title, volume
 - **Volume sync** — reads and mirrors the device hardware volume at startup
 - **Status bar** — clock, title, WiFi signal, battery level
@@ -63,24 +63,39 @@ On first launch, GVU scans your media folders and builds its library. Make sure 
 | Button | Action |
 |---|---|
 | D-pad left/right | Seek ±10 seconds |
-| D-pad up/down | Seek ±60 seconds |
+| D-pad up/down | Brightness ± |
+| L1 | Seek -60 seconds |
+| R1 | Seek +60 seconds |
+| L2 | Previous file in folder/season |
+| R2 | Next file in folder/season |
 | A | Play / Pause |
 | B | Back to browser |
-| L1 / R1 | Previous / next file |
-| L2 / R2 | Zoom cycle |
-| X | Toggle subtitles |
-| Y | Subtitle sync adjust |
-| SELECT | Toggle OSD |
-| START | Help overlay |
+| X | Cycle audio track |
+| Y | Zoom cycle |
+| SELECT | Toggle mute |
+| START | Toggle subtitle / open subtitle downloader |
+| START + D-pad left/right | Subtitle sync ±0.5s |
 | Volume up/down | Adjust volume |
+
+### Browser controls
+
+| Button | Action |
+|---|---|
+| D-pad | Navigate |
+| A | Open folder / play file |
+| B | Back (press twice at top level to exit) |
+| X | Open watch history |
+| Y | Scrape cover art for selected show |
+| SELECT | Cycle view layout |
+| R1 | Cycle color theme |
 
 ### Cover art
 
-Press **Y** on any show in the browser to scrape cover art from TMDB and TVMaze. A TMDB API key (free) improves results — enter it in Settings. TVMaze requires no key.
+Press **Y** on any show in the browser folder grid to scrape cover art from TMDB and TVMaze. A TMDB API key (free) improves results — enter it in Settings. TVMaze requires no key.
 
 ### Subtitles
 
-Local .srt files are loaded automatically if they share a filename with the video. To download subtitles, open the OSD (SELECT), go to the subtitle menu, search by title, pick a result from the list.
+Local .srt files are loaded automatically if they share a filename with the video. To download subtitles during playback, press **START** — if no subtitle is loaded it opens the downloader. Use **START + D-pad left/right** to adjust subtitle timing.
 
 ---
 

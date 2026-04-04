@@ -263,43 +263,84 @@ On slow devices (A30, Mini Flip) the video decode thread can't always keep up wi
 
 ## Button Mappings
 
+### Keysym reference
+
+The physical buttons map to SDL keysyms as follows (A30 and Mini/Flip share the same logical mapping — the evdev codes differ but the keysym output is identical):
+
+| Physical button | SDL keysym |
+|---|---|
+| A | SDLK_SPACE |
+| B | SDLK_LCTRL |
+| X | SDLK_LSHIFT |
+| Y | SDLK_LALT |
+| L1 | SDLK_PAGEUP |
+| R1 | SDLK_PAGEDOWN |
+| L2 | SDLK_COMMA |
+| R2 | SDLK_PERIOD |
+| SELECT | SDLK_RCTRL |
+| START | SDLK_RETURN |
+| MENU | SDLK_ESCAPE |
+| Vol+ | SDLK_EQUALS |
+| Vol- | SDLK_MINUS |
+
+Note: on A30 the L1/L2/R1/R2 evdev codes differ from Mini/Flip — this is handled transparently in `a30_screen.c` via separate keymaps. The keysym output is the same on all devices.
+
 ### Playback
 
 | Button | Action |
 |---|---|
+| A | Play / pause |
+| B | Back to browser (saves resume position) |
 | D-pad left/right | Seek ±10s |
-| D-pad up/down | Seek ±60s |
-| L1/R1 | Previous/next file in folder |
-| A | Play/pause |
-| B | Exit to browser |
-| X | Toggle subtitles |
-| Y | Subtitle sync adjust |
-| SELECT | Toggle OSD |
-| START | Toggle help overlay |
-| Volume up/down | Hardware volume (synced to device mixer) |
-| L2/R2 | Zoom cycle |
+| D-pad up/down | Brightness ± |
+| L1 | Seek -60s |
+| R1 | Seek +60s |
+| L2 | Previous file in folder/season |
+| R2 | Next file in folder/season |
+| X | Cycle audio track |
+| Y | Zoom cycle |
+| SELECT | Toggle mute |
+| START | Toggle subtitle on/off (or open downloader if no subtitle loaded) |
+| START + D-pad left | Subtitle sync -0.5s |
+| START + D-pad right | Subtitle sync +0.5s |
+| START + D-pad up | Cycle subtitle speed |
+| START + D-pad down | Reset subtitle sync and speed |
+| START + X | Force re-download subtitles |
+| Vol+ / Vol- | Hardware volume |
 
-### File browser
+### File browser (folder grid and season list)
 
 | Button | Action |
 |---|---|
-| D-pad up/down | Navigate (hold to scroll fast) |
-| D-pad left | Back / up a level |
-| A | Open folder or play file |
-| B | Back |
-| Y | Scrape cover art for selected show |
-| SELECT | Clear watch history |
-| START | Help overlay |
-| L1/R1 | Switch browser view layout |
+| D-pad | Navigate (hold for fast scroll) |
+| A | Open folder / enter season |
+| B | Back (press twice at top level to exit) |
+| X | Open watch history |
+| Y | Scrape cover art for selected show (folder grid only) |
+| SELECT | Cycle view layout |
+| R1 | Cycle color theme |
+| L2/R2 | Previous/next season (in file list view) |
+
+### File list (inside a folder/season)
+
+| Button | Action |
+|---|---|
+| D-pad up/down | Navigate |
+| A | Play file |
+| B | Back to season/folder |
+| SELECT | Cycle view layout |
+| R1 | Cycle color theme |
+| L2 | Previous season or previous folder |
+| R2 | Next season or next folder |
+| START | Open subtitle downloader for selected file |
 
 ### History page
 
 | Button | Action |
 |---|---|
 | D-pad up/down | Navigate |
-| A | Resume playback |
-| B | Back |
-| X | Remove entry |
+| A or START | Play selected entry |
+| B or X | Back to browser |
 | SELECT | Clear all history |
 
 ---
