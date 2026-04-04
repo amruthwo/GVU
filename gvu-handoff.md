@@ -21,7 +21,7 @@
 - [API Keys](#api-keys)
 - [On-Device Shell Gotchas](#on-device-shell-gotchas)
 - [FFmpeg Codec Selection](#ffmpeg-codec-selection)
-- [SpruceOS Handoff Notes](#sprucos-handoff-notes)
+- [SpruceOS Handoff Notes](#spruceos-handoff-notes)
 
 ---
 
@@ -265,85 +265,144 @@ On slow devices (A30, Mini Flip) the video decode thread can't always keep up wi
 
 ## Button Mappings
 
-### Keysym reference
+There are three distinct input paths in the codebase, each with its own evdev code mapping. All three produce the same SDL keysyms, so `main.c`, `browser.c`, and `history.c` only need to handle one set of keysyms regardless of device.
 
-The physical buttons map to SDL keysyms as follows (A30 and Mini/Flip share the same logical mapping — the evdev codes differ but the keysym output is identical):
+### A30 — `a30_screen.c`, `s_keymap_a30`
 
-| Physical button | SDL keysym |
+Selected when `g_display_rotation == 270` (A30's portrait fb0). All buttons are EV_KEY events.
+
+| Button | Linux key name | Code | SDL keysym |
+|---|---|---|---|
+| A | KEY_SPACE | 57 | SDLK_SPACE |
+| B | KEY_LEFTCTRL | 29 | SDLK_LCTRL |
+| X | KEY_LEFTSHIFT | 42 | SDLK_LSHIFT |
+| Y | KEY_LEFTALT | 56 | SDLK_LALT |
+| L1 | KEY_TAB | 15 | SDLK_PAGEUP |
+| R1 | KEY_BACKSPACE | 14 | SDLK_PAGEDOWN |
+| L2 | KEY_E | 18 | SDLK_COMMA |
+| R2 | KEY_T | 20 | SDLK_PERIOD |
+| SELECT | KEY_RIGHTCTRL | 97 | SDLK_RCTRL |
+| START | KEY_ENTER | 28 | SDLK_RETURN |
+| MENU | KEY_ESC | 1 | SDLK_ESCAPE |
+| D-pad up | KEY_UP | 103 | SDLK_UP |
+| D-pad down | KEY_DOWN | 108 | SDLK_DOWN |
+| D-pad left | KEY_LEFT | 105 | SDLK_LEFT |
+| D-pad right | KEY_RIGHT | 106 | SDLK_RIGHT |
+| Vol+ | KEY_VOLUMEUP | 115 | SDLK_EQUALS |
+| Vol- | KEY_VOLUMEDOWN | 114 | SDLK_MINUS |
+
+### Mini Flip V4 and Mini V2/V3 — `a30_screen.c`, `s_keymap_mini`
+
+Selected for all other rotations (Mini family reports 0° or 180°). L1/L2/R1/R2 evdev codes are swapped compared to A30 — the hardware wiring is different. Face buttons and d-pad are identical.
+
+| Button | Linux key name | Code | SDL keysym |
+|---|---|---|---|
+| A | KEY_SPACE | 57 | SDLK_SPACE |
+| B | KEY_LEFTCTRL | 29 | SDLK_LCTRL |
+| X | KEY_LEFTSHIFT | 42 | SDLK_LSHIFT |
+| Y | KEY_LEFTALT | 56 | SDLK_LALT |
+| L1 | KEY_E | 18 | SDLK_PAGEUP |
+| R1 | KEY_T | 20 | SDLK_PAGEDOWN |
+| L2 | KEY_TAB | 15 | SDLK_COMMA |
+| R2 | KEY_BACKSPACE | 14 | SDLK_PERIOD |
+| SELECT | KEY_RIGHTCTRL | 97 | SDLK_RCTRL |
+| START | KEY_ENTER | 28 | SDLK_RETURN |
+| MENU | KEY_ESC | 1 | SDLK_ESCAPE |
+| D-pad up | KEY_UP | 103 | SDLK_UP |
+| D-pad down | KEY_DOWN | 108 | SDLK_DOWN |
+| D-pad left | KEY_LEFT | 105 | SDLK_LEFT |
+| D-pad right | KEY_RIGHT | 106 | SDLK_RIGHT |
+| Vol+ | KEY_VOLUMEUP | 115 | SDLK_EQUALS |
+| Vol- | KEY_VOLUMEDOWN | 114 | SDLK_MINUS |
+
+### Brick and Flip — `brick_screen.c`
+
+Uses gamepad event codes. D-pad is EV_ABS (ABS_HAT0X/Y). L2/R2 are analog triggers (ABS_Z/RZ) with a threshold of 127 — they produce a keydown when the value crosses 127 and a keyup when it falls back below.
+
+**Important:** the evdev driver reports Xbox button names for these devices, but the physical labels are Nintendo layout. BTN_NORTH is the physical **X** button (top); BTN_WEST is the physical **Y** button (left). This means X and Y produce opposite keysyms compared to A30/Mini — see the action table below.
+
+| Button | Linux event code | Value | SDL keysym |
+|---|---|---|---|
+| A | BTN_EAST | 0x131 | SDLK_SPACE |
+| B | BTN_SOUTH | 0x130 | SDLK_LCTRL |
+| X | BTN_NORTH | 0x133 | SDLK_LALT |
+| Y | BTN_WEST | 0x134 | SDLK_LSHIFT |
+| L1 | BTN_TL | 0x136 | SDLK_PAGEUP |
+| R1 | BTN_TR | 0x137 | SDLK_PAGEDOWN |
+| L2 | ABS_Z > 127 | — | SDLK_COMMA |
+| R2 | ABS_RZ > 127 | — | SDLK_PERIOD |
+| SELECT | BTN_SELECT | 0x13A | SDLK_RCTRL |
+| START | BTN_START | 0x13B | SDLK_RETURN |
+| MENU | BTN_MODE | 0x13C | SDLK_ESCAPE |
+| D-pad up | ABS_HAT0Y = -1 | — | SDLK_UP |
+| D-pad down | ABS_HAT0Y = +1 | — | SDLK_DOWN |
+| D-pad left | ABS_HAT0X = -1 | — | SDLK_LEFT |
+| D-pad right | ABS_HAT0X = +1 | — | SDLK_RIGHT |
+| Vol+ | KEY_VOLUMEUP | 0x73 | SDLK_EQUALS |
+| Vol- | KEY_VOLUMEDOWN | 0x72 | SDLK_MINUS |
+
+### Action tables
+
+Because Brick/Flip has X→SDLK_LALT and Y→SDLK_LSHIFT (opposite to A30/Mini), the in-app actions for the physical X and Y buttons differ by device family.
+
+**Playback**
+
+| Action | A30 / Mini button | Brick / Flip button |
+|---|---|---|
+| Play / pause | A | A |
+| Back to browser | B | B |
+| Seek -10s | D-pad left | D-pad left |
+| Seek +10s | D-pad right | D-pad right |
+| Brightness down | D-pad down | D-pad down |
+| Brightness up | D-pad up | D-pad up |
+| Seek -60s | L1 | L1 |
+| Seek +60s | R1 | R1 |
+| Previous file | L2 | L2 |
+| Next file | R2 | R2 |
+| Cycle audio track | X | Y |
+| Zoom cycle | Y | X |
+| Toggle mute | SELECT | SELECT |
+| Subtitle toggle / downloader | START | START |
+| Subtitle sync -0.5s | START + D-pad left | START + D-pad left |
+| Subtitle sync +0.5s | START + D-pad right | START + D-pad right |
+| Cycle subtitle speed | START + D-pad up | START + D-pad up |
+| Reset subtitle sync | START + D-pad down | START + D-pad down |
+| Force re-download subtitles | START + X | START + Y |
+| Volume | Vol+ / Vol- | Vol+ / Vol- |
+
+**File browser (folder grid and season list)**
+
+| Action | A30 / Mini button | Brick / Flip button |
+|---|---|---|
+| Navigate | D-pad | D-pad |
+| Open folder / enter season | A | A |
+| Back | B | B |
+| Open watch history | X | Y |
+| Scrape cover art (folder grid) | Y | X |
+| Cycle view layout | SELECT | SELECT |
+| Cycle color theme | R1 | R1 |
+
+**File list**
+
+| Action | A30 / Mini button | Brick / Flip button |
+|---|---|---|
+| Navigate | D-pad up/down | D-pad up/down |
+| Play file | A | A |
+| Back | B | B |
+| Cycle view layout | SELECT | SELECT |
+| Cycle color theme | R1 | R1 |
+| Previous season / folder | L2 | L2 |
+| Next season / folder | R2 | R2 |
+| Open subtitle downloader | START | START |
+
+**History page**
+
+| Action | All devices |
 |---|---|
-| A | SDLK_SPACE |
-| B | SDLK_LCTRL |
-| X | SDLK_LSHIFT |
-| Y | SDLK_LALT |
-| L1 | SDLK_PAGEUP |
-| R1 | SDLK_PAGEDOWN |
-| L2 | SDLK_COMMA |
-| R2 | SDLK_PERIOD |
-| SELECT | SDLK_RCTRL |
-| START | SDLK_RETURN |
-| MENU | SDLK_ESCAPE |
-| Vol+ | SDLK_EQUALS |
-| Vol- | SDLK_MINUS |
-
-Note: on A30 the L1/L2/R1/R2 evdev codes differ from Mini/Flip — this is handled transparently in `a30_screen.c` via separate keymaps. The keysym output is the same on all devices.
-
-### Playback
-
-| Button | Action |
-|---|---|
-| A | Play / pause |
-| B | Back to browser (saves resume position) |
-| D-pad left/right | Seek ±10s |
-| D-pad up/down | Brightness ± |
-| L1 | Seek -60s |
-| R1 | Seek +60s |
-| L2 | Previous file in folder/season |
-| R2 | Next file in folder/season |
-| X | Cycle audio track |
-| Y | Zoom cycle |
-| SELECT | Toggle mute |
-| START | Toggle subtitle on/off (or open downloader if no subtitle loaded) |
-| START + D-pad left | Subtitle sync -0.5s |
-| START + D-pad right | Subtitle sync +0.5s |
-| START + D-pad up | Cycle subtitle speed |
-| START + D-pad down | Reset subtitle sync and speed |
-| START + X | Force re-download subtitles |
-| Vol+ / Vol- | Hardware volume |
-
-### File browser (folder grid and season list)
-
-| Button | Action |
-|---|---|
-| D-pad | Navigate (hold for fast scroll) |
-| A | Open folder / enter season |
-| B | Back (press twice at top level to exit) |
-| X | Open watch history |
-| Y | Scrape cover art for selected show (folder grid only) |
-| SELECT | Cycle view layout |
-| R1 | Cycle color theme |
-| L2/R2 | Previous/next season (in file list view) |
-
-### File list (inside a folder/season)
-
-| Button | Action |
-|---|---|
-| D-pad up/down | Navigate |
-| A | Play file |
-| B | Back to season/folder |
-| SELECT | Cycle view layout |
-| R1 | Cycle color theme |
-| L2 | Previous season or previous folder |
-| R2 | Next season or next folder |
-| START | Open subtitle downloader for selected file |
-
-### History page
-
-| Button | Action |
-|---|---|
-| D-pad up/down | Navigate |
-| A or START | Play selected entry |
-| B or X | Back to browser |
-| SELECT | Clear all history |
+| Navigate | D-pad up/down |
+| Play selected entry | A or START |
+| Back to browser | B or X (A30/Mini) / B or Y (Brick/Flip) |
+| Clear all history | SELECT |
 
 ---
 
