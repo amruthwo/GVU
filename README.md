@@ -110,7 +110,7 @@ You can add subtitles manually with a computer, just make sure the .srt file mat
 
 ## Configuration
 
-Settings are stored in `gvu.conf` in the app folder. Most options are accessible from the in-app settings menu. Common things you might want to set:
+Settings are stored in `gvu.conf` in the app folder. Most options are accessible from within the app, but you may want to tinker manually. Common things you might want to set:
 
 ```
 tmdb_key = your_tmdb_api_key_here
