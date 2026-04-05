@@ -426,14 +426,19 @@ int video_open(VideoCtx *v, AVCodecParameters *cp, AVRational time_base,
             if (cp->width == 2 * fit.w && cp->height == 2 * fit.h)
                 v->portrait_direct = 1;
         } else {
-            /* Mini Flip / Mini family (rot=180) and other landscape devices:
-               keep native video resolution in the SDL texture.  sws then only
-               does YUV→BGRA format conversion (no resize), which is ~5× faster
-               than an upscale.  SDL_RenderCopy handles the scale to fit rect;
-               for typical SD content (480×360) this is much cheaper than having
-               sws upscale 480×360→746×560 (~40ms) which starves the 25fps budget. */
-            v->tex_w = cp->width;
-            v->tex_h = cp->height;
+            /* Mini Flip / Mini family (rot=180) and other landscape devices.
+               SD content (smaller than display): keep native res — sws does
+               format conversion only, SDL handles the upscale cheaply.
+               HD content (larger than display): pre-scale in sws to fit rect.
+               libswscale NEON-optimises downscale; keeping native 1080p frames
+               costs ~8 MB each and OOMs the 100 MB Mini Flip on complex files. */
+            if (cp->width > g_display_w || cp->height > g_display_h) {
+                v->tex_w = fit.w;
+                v->tex_h = fit.h;
+            } else {
+                v->tex_w = cp->width;
+                v->tex_h = cp->height;
+            }
         }
     }
 #elif defined(GVU_TRIMUI_BRICK)
@@ -478,12 +483,13 @@ int video_open(VideoCtx *v, AVCodecParameters *cp, AVRational time_base,
        fast shortcuts that trade a little accuracy for speed. */
     v->codec_ctx->flags2 |= AV_CODEC_FLAG2_FAST;
 
-    /* Limit DPB to 3 frames (current + 2 refs).  The V3s (Mini Flip) and A30
+    /* Limit DPB to 4 frames (current + 3 refs).  The V3s (Mini Flip) and A30
        have ~100 MB RAM shared with SpruceOS.  At 720p H.264 each reference
        frame costs ~1.4 MB; the stream SPS can request 5-8 refs = 7-11 MB.
-       Capping at refs=2 saves 3-6 MB with no visible degradation on typical
-       film/TV content (which uses ref ≤ 2 for B-frame pairs). */
-    v->codec_ctx->refs = 2;
+       refs=3 covers typical film/TV content including files that use 3-ref
+       B-frame groups; the BGRA frame buffer reduction (HD video pre-scaled to
+       fit-rect in sws) frees enough headroom to afford the extra ref frame. */
+    v->codec_ctx->refs = 3;
 #endif
 
     int ret = avcodec_open2(v->codec_ctx, codec, NULL);

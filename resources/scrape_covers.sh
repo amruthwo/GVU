@@ -118,10 +118,10 @@ if $WGET -q --no-check-certificate -T 10 -O "$tmpfile" "$url" 2>/dev/null; then
               | sed 's/[^0-9]*\([0-9]*\).*/\1/' || true)
 
     if [ -z "$cover_url" ]; then
-        # TMDB found nothing — use TVMaze image
+        # TMDB found nothing — use TVMaze medium portrait (consistent sizing)
         show_orig=$(tr ',' '\n' < "$tmpfile" \
-                    | grep '"original"' | head -1 \
-                    | sed 's/.*"original":"\([^"]*\)".*/\1/' || true)
+                    | grep '"medium"' | head -1 \
+                    | sed 's/.*"medium":"\([^"]*\)".*/\1/' || true)
         show_orig=$(echo "$show_orig" | sed 's|^https://|http://|')
 
         # Season-specific artwork (only when in a detected season folder)
@@ -133,8 +133,8 @@ if $WGET -q --no-check-certificate -T 10 -O "$tmpfile" "$url" 2>/dev/null; then
                 # grep -A 20: "number" and "original" are ~13 comma-separated fields apart.
                 orig=$(tr ',' '\n' < "$tmpfile" \
                        | grep -A 20 '"number":'"$season_num"'$' \
-                       | grep '"original"' | head -1 \
-                       | sed 's/.*"original":"\([^"]*\)".*/\1/' || true)
+                       | grep '"medium"' | head -1 \
+                       | sed 's/.*"medium":"\([^"]*\)".*/\1/' || true)
                 orig=$(echo "$orig" | sed 's|^https://|http://|')
                 if [ -n "$orig" ] && [ "$orig" != "null" ]; then
                     cover_url="$orig"
@@ -204,8 +204,8 @@ if $WGET -q --no-check-certificate -T 10 -O "$tmpimg" "$cover_url" 2>/dev/null; 
                 # Find season image URL from seasons JSON
                 orig=$(tr ',' '\n' < "$tmpseasons" \
                        | grep -A 20 '"number":'"$snum"'$' \
-                       | grep '"original"' | head -1 \
-                       | sed 's/.*"original":"\([^"]*\)".*/\1/' || true)
+                       | grep '"medium"' | head -1 \
+                       | sed 's/.*"medium":"\([^"]*\)".*/\1/' || true)
                 orig=$(echo "$orig" | sed 's|^https://|http://|')
                 if [ -z "$orig" ] || [ "$orig" = "null" ]; then
                     echo "Season $snum: no artwork found"
