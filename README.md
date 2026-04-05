@@ -33,6 +33,7 @@ GVU is a native video player for SpruceOS devices. It has a three-level media br
 On first launch, GVU scans your media folders and builds its library. Make sure your video files are in `/mnt/SDCARD/Roms/MEDIA` or `/mnt/SDCARD/Media/` (or any subfolder) organized by show name.
 
 > EXAMPLE: /mnt/SDCARD/Roms/MEDIA/Futurama/Season 1/S01E01 Space Pilot 3000.mp4
+> EXAMPLE: /mnt/SDCARD/Media/Movies/Back to the Future (1985)/Back to the Future.mkv
 
 ---
 
