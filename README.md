@@ -30,7 +30,9 @@ GVU is a native video player for SpruceOS devices. It has a three-level media br
 2. Extract the zip to your SD card — it creates `/mnt/SDCARD/App/GVU/`.
 3. Launch from the SpruceOS app menu.
 
-On first launch, GVU scans your media folders and builds its library. Make sure your video files are in `/mnt/SDCARD/Roms/MEDIA/` or a subfolder organized by show name.
+On first launch, GVU scans your media folders and builds its library. Make sure your video files are in `/mnt/SDCARD/Roms/MEDIA` or `/mnt/SDCARD/Media/` (or any subfolder) organized by show name.
+
+> EXAMPLE: mnt/SDCARD/Roms/MEDIA/Futurama/Season 1/S01E01 Space Pilot 3000.mp4
 
 ---
 
