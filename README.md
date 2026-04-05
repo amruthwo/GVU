@@ -102,6 +102,8 @@ Press **Y** on any show in the browser folder grid to scrape cover art from TMDB
 
 Local .srt files are loaded automatically if they share a filename with the video. To download subtitles during playback, press **START** — if no subtitle is loaded it opens the downloader. Use **START + D-pad left/right** to adjust subtitle timing.
 
+You can add subtitles manually with a computer, just make sure the .srt file matches the video file name in the same folder.
+> S01E01.mp4, S01E01.srt
 ---
 
 ## Configuration
