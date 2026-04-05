@@ -98,6 +98,8 @@ On first launch, GVU scans your media folders and builds its library. Make sure 
 
 Press **Y** on any show in the browser folder grid to scrape cover art from TMDB and TVMaze. A TMDB API key (free) improves results — enter yours in `/mnt/SDCARD/App/GVU/resources/API/`. TVMaze requires no API/key.
 
+You can also add covers manually by placing a `cover.jpg` or `cover.png` in the folder.
+
 ### Subtitles
 
 Local .srt files are loaded automatically if they share a filename with the video. To download subtitles during playback, press **START** — if no subtitle is loaded it opens the downloader. Use **START + D-pad left/right** to adjust subtitle timing.
