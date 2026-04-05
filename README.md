@@ -94,7 +94,7 @@ On first launch, GVU scans your media folders and builds its library. Make sure 
 
 ### Cover art
 
-Press **Y** on any show in the browser folder grid to scrape cover art from TMDB and TVMaze. A TMDB API key (free) improves results — enter it in Settings. TVMaze requires no key.
+Press **Y** on any show in the browser folder grid to scrape cover art from TMDB and TVMaze. A TMDB API key (free) improves results — enter yours in `/mnt/SDCARD/App/GVU/resources/API/`. TVMaze requires no API/key.
 
 ### Subtitles
 
