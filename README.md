@@ -78,6 +78,8 @@ On first launch, GVU scans your media folders and builds its library. Make sure 
 | SELECT | Toggle mute |
 | START | Toggle subtitle / open subtitle downloader |
 | START + D-pad left/right | Subtitle sync ±0.5s |
+| START + D-pad up | Change subtitle speed to match with NTSC/PAL, etc.|
+| START + D-pad down | Reset subtitle speed/sync |
 | Volume up/down | Adjust volume |
 
 ### Browser controls
