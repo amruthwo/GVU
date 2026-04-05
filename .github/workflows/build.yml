@@ -10,8 +10,13 @@ permissions:
 jobs:
   build-a30:
     runs-on: ubuntu-latest
+    env:
+      IMAGE: ghcr.io/${{ github.repository_owner }}/gvu-builder-a30
     steps:
       - uses: actions/checkout@v4
+
+      - name: Lowercase image name
+        run: echo "IMAGE=$(echo $IMAGE | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -37,15 +42,15 @@ jobs:
           context: .
           file: cross-compile/miyoo-a30/Dockerfile.gvu
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/gvu-builder-a30:latest
-          cache-from: type=registry,ref=ghcr.io/${{ github.repository_owner }}/gvu-builder-a30:buildcache
-          cache-to: type=registry,ref=ghcr.io/${{ github.repository_owner }}/gvu-builder-a30:buildcache,mode=max
+          tags: ${{ env.IMAGE }}:latest
+          cache-from: type=registry,ref=${{ env.IMAGE }}:buildcache
+          cache-to: type=registry,ref=${{ env.IMAGE }}:buildcache,mode=max
 
       - name: Build inside Docker
         run: |
           mkdir -p build
           docker run --rm -v ${{ github.workspace }}:/gvu \
-            ghcr.io/${{ github.repository_owner }}/gvu-builder-a30:latest \
+            ${{ env.IMAGE }}:latest \
             sh /gvu/cross-compile/miyoo-a30/build_inside_docker.sh
 
       - name: Upload artifacts
@@ -60,8 +65,13 @@ jobs:
 
   build-brick:
     runs-on: ubuntu-latest
+    env:
+      IMAGE: ghcr.io/${{ github.repository_owner }}/gvu-builder-brick
     steps:
       - uses: actions/checkout@v4
+
+      - name: Lowercase image name
+        run: echo "IMAGE=$(echo $IMAGE | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -87,15 +97,15 @@ jobs:
           context: .
           file: cross-compile/trimui-brick/Dockerfile.gvu
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/gvu-builder-brick:latest
-          cache-from: type=registry,ref=ghcr.io/${{ github.repository_owner }}/gvu-builder-brick:buildcache
-          cache-to: type=registry,ref=ghcr.io/${{ github.repository_owner }}/gvu-builder-brick:buildcache,mode=max
+          tags: ${{ env.IMAGE }}:latest
+          cache-from: type=registry,ref=${{ env.IMAGE }}:buildcache
+          cache-to: type=registry,ref=${{ env.IMAGE }}:buildcache,mode=max
 
       - name: Build inside Docker
         run: |
           mkdir -p build
           docker run --rm -v ${{ github.workspace }}:/gvu \
-            ghcr.io/${{ github.repository_owner }}/gvu-builder-brick:latest \
+            ${{ env.IMAGE }}:latest \
             sh /gvu/cross-compile/trimui-brick/build_inside_docker.sh
 
       - name: Upload artifacts
