@@ -168,6 +168,20 @@ static int count_direct_videos(const char *path, int *has_ep) {
     return count;
 }
 
+/* Returns 1 if the folder basename is a generic organisational name that
+   should never become a show container (e.g. "Video", "Media", "Movies").
+   When true, Case 2 forces Case 3 behaviour and recurses instead. */
+static int is_container_name(const char *name) {
+    static const char *containers[] = {
+        "media", "video", "videos", "movies", "films",
+        "shows", "tv", "series", "roms", NULL
+    };
+    for (int i = 0; containers[i]; i++) {
+        if (strcasecmp(name, containers[i]) == 0) return 1;
+    }
+    return 0;
+}
+
 /* Returns 1 if every video-containing subdir of path has exactly 1 video
    file with no episode naming pattern — i.e., it looks like a movie
    collection rather than a TV show. */
@@ -342,7 +356,12 @@ static void scan_dir(MediaLibrary *lib, const char *path) {
 
     /* --- Case 2: sub-dirs with video files ---
      * Movie heuristic: if every video subdir has exactly 1 file with no
-     * episode pattern, treat the container as a movie collection. */
+     * episode pattern, treat the container as a movie collection.
+     * Container name check: if the folder has a generic organisational name
+     * (e.g. "Video", "Media"), recurse instead of creating a show entry. */
+    const char *basename_p = strrchr(path, '/');
+    const char *folder_basename = basename_p ? basename_p + 1 : path;
+
     if (all_subdirs_are_movies(path)) {
         /* Movie collection: each video subdir → its own movie MediaFolder */
         rewinddir(d);
@@ -385,6 +404,20 @@ static void scan_dir(MediaLibrary *lib, const char *path) {
                     scan_dir(lib, child);
                 }
             }
+            free(child);
+        }
+        closedir(d);
+        return;
+    }
+
+    /* Container name guard: generic folder names become pass-through containers */
+    if (is_container_name(folder_basename)) {
+        rewinddir(d);
+        while ((ent = readdir(d)) != NULL) {
+            if (ent->d_name[0] == '.') continue;
+            char *child = path_join(path, ent->d_name);
+            if (child && path_is_dir(child))
+                scan_dir(lib, child);
             free(child);
         }
         closedir(d);
