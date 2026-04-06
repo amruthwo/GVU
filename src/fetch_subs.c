@@ -484,6 +484,23 @@ static void parse_filename(const char *video_path,
         strip_tag(stem, RELEASE_TAGS[i]);
     normalize_separators(stem);
 
+    /* Strip year "(YYYY)" from movie titles — not a release tag but confuses
+       subtitle APIs.  Only strip for movies (season < 0); TV episode filenames
+       with a year in them are unusual and stripping is probably still fine. */
+    {
+        char *yp = stem;
+        while (*yp) {
+            if (*yp == '(' && isdigit((unsigned char)yp[1]) &&
+                isdigit((unsigned char)yp[2]) && isdigit((unsigned char)yp[3]) &&
+                isdigit((unsigned char)yp[4]) && yp[5] == ')') {
+                memmove(yp, yp + 6, strlen(yp + 6) + 1);
+                continue;
+            }
+            yp++;
+        }
+        normalize_separators(stem);
+    }
+
     /* If title empty and we have season info, climb directory tree for show name */
     if (stem[0] == '\0' && *season >= 0) {
         char parent_buf[512];
@@ -829,7 +846,7 @@ static int subdl_search(const char *title, int season, int episode,
     } else {
         snprintf(url, sizeof(url),
             "https://api.subdl.com/api/v1/subtitles?api_key=%s&film_name=%s"
-            "&languages=%s",
+            "&languages=%s&type=movie",
             key_enc, t_enc, lang_enc);
     }
 

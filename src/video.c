@@ -157,6 +157,20 @@ void video_pop_frame(VideoCtx *v) {
  * Aspect ratio helper
  * ---------------------------------------------------------------------- */
 
+/* Apply sample_aspect_ratio to coded dimensions to get display dimensions.
+   SAR 0:0 or 1:1 → no-op.  Used before video_fit_rect so the layout accounts
+   for non-square pixels (e.g. DVD/anamorphic encodes like SAR 8:5). */
+static void sar_display_size(AVCodecParameters *cp, int *disp_w, int *disp_h) {
+    *disp_w = cp->width;
+    *disp_h = cp->height;
+    if (cp->sample_aspect_ratio.num > 0 && cp->sample_aspect_ratio.den > 0 &&
+        (cp->sample_aspect_ratio.num != cp->sample_aspect_ratio.den)) {
+        *disp_w = (int)((float)cp->width
+                        * cp->sample_aspect_ratio.num
+                        / cp->sample_aspect_ratio.den + 0.5f);
+    }
+}
+
 SDL_Rect video_fit_rect(int src_w, int src_h, int dst_w, int dst_h) {
     float sa = (float)src_w / (float)src_h;
     float da = (float)dst_w / (float)dst_h;
@@ -413,7 +427,9 @@ int video_open(VideoCtx *v, AVCodecParameters *cp, AVRational time_base,
     v->native_h   = cp->height;
 #ifdef GVU_A30
     {
-        SDL_Rect fit = video_fit_rect(cp->width, cp->height, g_display_w, g_display_h);
+        int disp_w, disp_h;
+        sar_display_size(cp, &disp_w, &disp_h);
+        SDL_Rect fit = video_fit_rect(disp_w, disp_h, g_display_w, g_display_h);
         if (g_display_rotation == 270) {
             /* A30 portrait (90°CCW): pre-scale to fit rect in sws so SDL does
                a 1:1 blit.  libswscale is NEON-optimised for downscale; SDL's
@@ -447,7 +463,9 @@ int video_open(VideoCtx *v, AVCodecParameters *cp, AVRational time_base,
        can blit it directly to fb0 via brick_flip_video() without going through
        the SDL texture upload + software render path (landscape_direct). */
     {
-        SDL_Rect fit = video_fit_rect(cp->width, cp->height, g_display_w, g_display_h);
+        int disp_w, disp_h;
+        sar_display_size(cp, &disp_w, &disp_h);
+        SDL_Rect fit = video_fit_rect(disp_w, disp_h, g_display_w, g_display_h);
         v->tex_w = fit.w;
         v->tex_h = fit.h;
         if (fit.w == g_display_w)
