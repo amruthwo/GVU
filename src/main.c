@@ -780,15 +780,26 @@ int main(int argc, char *argv[]) {
                         /* A button — launch scrape script */
                         scrape_confirm = 0;
                         unlink(SCRAPE_DONE_FILE);
-                        /* Build argv: sh resources/scrape_covers.sh <path> [key] */
-                        const char *folder = lib.folders[scrape_folder_idx].path;
-                        const char *key    = config_tmdb_key();
-                        char *argv_buf[5];
+                        /* Build argv: sh resources/scrape_covers.sh <path> [key] [--movie] */
+                        const char *folder    = lib.folders[scrape_folder_idx].path;
+                        int         is_movie  = lib.folders[scrape_folder_idx].is_movie;
+                        const char *key       = config_tmdb_key();
+                        static const char empty_key[] = "";
+                        char *argv_buf[6];
                         argv_buf[0] = "sh";
                         argv_buf[1] = "resources/scrape_covers.sh";
                         argv_buf[2] = (char *)folder;
-                        argv_buf[3] = (key && key[0]) ? (char *)key : NULL;
-                        argv_buf[4] = NULL;
+                        if (is_movie) {
+                            /* Always fill key slot so --movie lands at $3 */
+                            argv_buf[3] = (key && key[0]) ? (char *)key
+                                                           : (char *)empty_key;
+                            argv_buf[4] = "--movie";
+                            argv_buf[5] = NULL;
+                        } else {
+                            argv_buf[3] = (key && key[0]) ? (char *)key : NULL;
+                            argv_buf[4] = NULL;
+                            argv_buf[5] = NULL;
+                        }
                         /* Redirect stdout/stderr to log file */
                         int logfd = open(SCRAPE_LOG_FILE,
                                          O_WRONLY | O_CREAT | O_TRUNC, 0644);

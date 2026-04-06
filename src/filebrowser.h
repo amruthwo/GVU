@@ -29,6 +29,9 @@ typedef struct {
     /* is_show == 1: show container (seasons/season_count/season_cap used) */
     int        is_show;
 
+    /* is_movie == 1: flat movie folder — use TMDB movie search for cover art */
+    int        is_movie;
+
     VideoFile *files;
     int        file_count;
     int        file_cap;

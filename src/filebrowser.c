@@ -102,7 +102,6 @@ static int has_direct_video_files(const char *path) {
     int found = 0;
     while ((ent = readdir(d)) != NULL && !found) {
         if (ent->d_name[0] == '.') continue;
-        /* Only care about regular files with video extensions */
         char *child = path_join(path, ent->d_name);
         if (child) {
             if (!path_is_dir(child) && has_video_ext(ent->d_name))
@@ -112,6 +111,86 @@ static int has_direct_video_files(const char *path) {
     }
     closedir(d);
     return found;
+}
+
+/* -------------------------------------------------------------------------
+ * Movie detection heuristics
+ *
+ * A file is episode-like if its name contains an SxxExx or NxNN pattern.
+ * A folder is movie-like if it has exactly 1 video file and no episode names.
+ * A container is a movie collection if ALL its video subdirs are movie-like.
+ *
+ * This approach works regardless of how the parent folder is named (Movies,
+ * Filme, Peliculas, etc.) or what language the user organises in.
+ * ---------------------------------------------------------------------- */
+
+/* Returns 1 if filename contains an SxxExx or NxNN episode pattern. */
+static int has_episode_pattern(const char *name) {
+    const char *p = name;
+    while (*p) {
+        /* SxxExx / sxxexx — e.g. S01E04, s2e10 */
+        if ((p[0] == 'S' || p[0] == 's') &&
+            isdigit((unsigned char)p[1])) {
+            int i = 2;
+            while (isdigit((unsigned char)p[i])) i++;
+            if ((p[i] == 'E' || p[i] == 'e') && isdigit((unsigned char)p[i+1]))
+                return 1;
+        }
+        /* NxNN — e.g. 1x01, 2x10 */
+        if (isdigit((unsigned char)p[0]) && p[1] == 'x' &&
+            isdigit((unsigned char)p[2]))
+            return 1;
+        p++;
+    }
+    return 0;
+}
+
+/* Count direct video files in path; set *has_ep=1 if any have episode patterns. */
+static int count_direct_videos(const char *path, int *has_ep) {
+    DIR *d = opendir(path);
+    if (!d) return 0;
+    int count = 0;
+    *has_ep = 0;
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL) {
+        if (ent->d_name[0] == '.') continue;
+        char *child = path_join(path, ent->d_name);
+        if (child) {
+            if (!path_is_dir(child) && has_video_ext(ent->d_name)) {
+                count++;
+                if (has_episode_pattern(ent->d_name))
+                    *has_ep = 1;
+            }
+            free(child);
+        }
+    }
+    closedir(d);
+    return count;
+}
+
+/* Returns 1 if every video-containing subdir of path has exactly 1 video
+   file with no episode naming pattern — i.e., it looks like a movie
+   collection rather than a TV show. */
+static int all_subdirs_are_movies(const char *path) {
+    DIR *d = opendir(path);
+    if (!d) return 0;
+    int found_any = 0, all_movie = 1;
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL) {
+        if (ent->d_name[0] == '.') continue;
+        char *child = path_join(path, ent->d_name);
+        if (!child) continue;
+        if (path_is_dir(child) && has_direct_video_files(child)) {
+            int has_ep = 0;
+            int cnt = count_direct_videos(child, &has_ep);
+            found_any = 1;
+            if (cnt != 1 || has_ep)
+                all_movie = 0;
+        }
+        free(child);
+    }
+    closedir(d);
+    return found_any && all_movie;
 }
 
 /* -------------------------------------------------------------------------
@@ -176,11 +255,16 @@ static char *find_cover(const char *dir) {
  *
  * Detection rules:
  *   1. Directory has direct video files
- *      → flat MediaFolder (is_show=0), recurse into sub-dirs normally
+ *      → flat MediaFolder (is_show=0).
+ *      is_movie=1 if exactly 1 video file and no episode naming pattern;
+ *      is_movie=0 otherwise (multiple episode files = TV season).
  *
  *   2. Directory has no direct videos, but immediate sub-dirs that do
- *      → show container (is_show=1) with those sub-dirs as seasons
- *      Single-season shows are promoted to flat (season level skipped)
+ *      Movie heuristic: if ALL video subdirs have exactly 1 video file
+ *        and no episode patterns → movie collection: each subdir becomes
+ *        its own flat MediaFolder with is_movie=1.
+ *      Otherwise → TV show container (is_show=1) with those subdirs as
+ *        seasons.  Single-season shows are promoted to flat.
  *
  *   3. Neither → skip this folder, recurse into sub-dirs
  * ---------------------------------------------------------------------- */
@@ -191,6 +275,7 @@ static void scan_dir(MediaLibrary *lib, const char *path) {
 
     /* --- Pass 1: quick scan to decide which case we're in --- */
     int direct_video_count = 0;
+    int direct_has_episode = 0;
     int video_subdir_count = 0;
 
     struct dirent *ent;
@@ -203,17 +288,21 @@ static void scan_dir(MediaLibrary *lib, const char *path) {
                 video_subdir_count++;
         } else if (has_video_ext(ent->d_name)) {
             direct_video_count++;
+            if (has_episode_pattern(ent->d_name))
+                direct_has_episode = 1;
         }
         free(child);
     }
 
-    /* --- Case 1: flat folder --- */
+    /* --- Case 1: flat folder (direct video files present) --- */
     if (direct_video_count > 0) {
         MediaFolder folder = {0};
         folder.path   = strdup(path);
         const char *slash = strrchr(path, '/');
         folder.name   = strdup(slash ? slash + 1 : path);
         folder.is_show = 0;
+        /* Movie heuristic: single file, no episode-style name */
+        folder.is_movie = (direct_video_count == 1 && !direct_has_episode) ? 1 : 0;
 
         rewinddir(d);
         while ((ent = readdir(d)) != NULL) {
@@ -251,7 +340,58 @@ static void scan_dir(MediaLibrary *lib, const char *path) {
         return;
     }
 
-    /* --- Case 2: show container — build seasons --- */
+    /* --- Case 2: sub-dirs with video files ---
+     * Movie heuristic: if every video subdir has exactly 1 file with no
+     * episode pattern, treat the container as a movie collection. */
+    if (all_subdirs_are_movies(path)) {
+        /* Movie collection: each video subdir → its own movie MediaFolder */
+        rewinddir(d);
+        while ((ent = readdir(d)) != NULL) {
+            if (ent->d_name[0] == '.') continue;
+            char *child = path_join(path, ent->d_name);
+            if (!child) continue;
+            if (path_is_dir(child)) {
+                if (has_direct_video_files(child)) {
+                    MediaFolder movie = {0};
+                    movie.path    = strdup(child);
+                    movie.name    = strdup(ent->d_name);
+                    movie.is_show  = 0;
+                    movie.is_movie = 1;
+
+                    DIR *md = opendir(child);
+                    if (md) {
+                        struct dirent *me;
+                        while ((me = readdir(md)) != NULL) {
+                            if (me->d_name[0] == '.') continue;
+                            char *mp = path_join(child, me->d_name);
+                            if (mp && !path_is_dir(mp) &&
+                                has_video_ext(me->d_name))
+                                folder_add_file(&movie, child, me->d_name);
+                            free(mp);
+                        }
+                        closedir(md);
+                    }
+
+                    if (movie.file_count > 0) {
+                        qsort(movie.files, (size_t)movie.file_count,
+                              sizeof(VideoFile), videofile_cmp);
+                        movie.cover = find_cover(child);
+                        library_add_folder(lib, &movie);
+                    } else {
+                        free(movie.path); free(movie.name); free(movie.files);
+                    }
+                } else {
+                    /* Deeper nesting — recurse */
+                    scan_dir(lib, child);
+                }
+            }
+            free(child);
+        }
+        closedir(d);
+        return;
+    }
+
+    /* --- Case 2 (TV): show container — build seasons --- */
     MediaFolder show = {0};
     show.path    = strdup(path);
     const char *slash = strrchr(path, '/');
