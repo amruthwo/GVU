@@ -2,6 +2,9 @@ name: Build GVU
 
 on:
   workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
 
 permissions:
   contents: write
@@ -123,15 +126,35 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Ensure latest release exists
+      - name: Determine version and release target
+        id: release_info
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "version=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+            echo "release_tag=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+            echo "is_tag=true" >> $GITHUB_OUTPUT
+          else
+            echo "version=${{ github.sha }}" >> $GITHUB_OUTPUT
+            echo "release_tag=latest" >> $GITHUB_OUTPUT
+            echo "is_tag=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Ensure release exists
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release view latest >/dev/null 2>&1 || \
-            gh release create latest \
-              --title "Latest Build" \
-              --notes "GVU universal build for spruceOS" \
-            || true
+          if [ "${{ steps.release_info.outputs.is_tag }}" = "true" ]; then
+            gh release create "${{ steps.release_info.outputs.release_tag }}" \
+              --title "GVU ${{ steps.release_info.outputs.release_tag }}" \
+              --notes "GVU universal build for SpruceOS — ${{ steps.release_info.outputs.release_tag }}" \
+              2>/dev/null || true
+          else
+            gh release view latest >/dev/null 2>&1 || \
+              gh release create latest \
+                --title "Latest Build" \
+                --notes "GVU universal build for SpruceOS (latest)" \
+              || true
+          fi
 
       - name: Download artifacts
         uses: actions/download-artifact@v4
@@ -144,22 +167,21 @@ jobs:
           TMDB_KEY: ${{ secrets.TMDB_KEY }}
           SUBDL_KEY: ${{ secrets.SUBDL_KEY }}
         run: |
-          # Write API key files if secrets are set
           [ -n "$TMDB_KEY" ] && printf '%s' "$TMDB_KEY" > .tmdb_key
           [ -n "$SUBDL_KEY" ] && printf '%s' "$SUBDL_KEY" > .subdl_key
-          sh cross-compile/universal/package_gvu_universal.sh ${{ github.sha }}
+          sh cross-compile/universal/package_gvu_universal.sh "${{ steps.release_info.outputs.version }}"
 
       - name: Upload to release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # Find the zip (name includes version)
           ZIP=$(ls gvu_spruce_universal_v*.zip 2>/dev/null | head -1)
-          if [ -n "$ZIP" ]; then
-            # Also upload as a stable name for easy download
-            cp "$ZIP" GVU.zip
-            gh release upload latest GVU.zip --clobber
-          else
+          if [ -z "$ZIP" ]; then
             echo "::error::No zip file found"
             exit 1
           fi
+          # Upload the versioned zip
+          gh release upload "${{ steps.release_info.outputs.release_tag }}" "$ZIP" --clobber
+          # Also upload as GVU.zip for a stable download URL
+          cp "$ZIP" GVU.zip
+          gh release upload "${{ steps.release_info.outputs.release_tag }}" GVU.zip --clobber
