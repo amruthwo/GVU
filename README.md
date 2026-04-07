@@ -133,6 +133,31 @@ All decoding is software. H.264 at 480p runs smoothly on all devices. H.265 work
 
 ---
 
+## CI Build
+
+The GitHub Actions workflow builds both architectures and packages a universal zip. To trigger it, go to **Actions → Build GVU → Run workflow**.
+
+### API Key Secrets
+
+The TMDB and SubDL API keys are injected at package time from GitHub repo secrets. Without them the build still works, but cover art fetching (TMDB) and SubDL subtitle search will be disabled.
+
+To add them:
+
+1. Go to the GVU repo on GitHub
+2. Click **Settings** (top tab bar)
+3. In the left sidebar, expand **Secrets and variables**
+4. Click **Actions**
+5. Click **New repository secret**
+6. For the first key:
+   - **Name**: `TMDB_KEY`
+   - **Secret**: paste your TMDB API key (the same value from your local `.tmdb_key` file)
+   - Click **Add secret**
+7. Click **New repository secret** again
+8. For the second key:
+   - **Name**: `SUBDL_KEY`
+   - **Secret**: paste your SubDL API key (the same value from your local `.subdl_key` file)
+   - Click **Add secret**
+
 ## Developer Notes
 
 See [gvu-handoff.md](gvu-handoff.md) for full build instructions, device-specific quirks, architecture notes, and SpruceOS integration details.
