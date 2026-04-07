@@ -434,9 +434,9 @@ static int try_se(const char *norm, int *season, int *episode)
  */
 static void parse_filename(const char *video_path,
                             char *title, size_t title_sz,
-                            int *season, int *episode)
+                            int *season, int *episode, int *year)
 {
-    *season = *episode = -1;
+    *season = *episode = *year = -1;
 
     /* Basename without extension */
     const char *base = strrchr(video_path, '/');
@@ -483,6 +483,29 @@ static void parse_filename(const char *video_path,
     for (int i = 0; RELEASE_TAGS[i]; i++)
         strip_tag(stem, RELEASE_TAGS[i]);
     normalize_separators(stem);
+
+    /* Strip year "(YYYY)" from movie titles — not a release tag but confuses
+       subtitle APIs.  Only strip for movies (season < 0); TV episode filenames
+       with a year in them are unusual and stripping is probably still fine.
+       Capture the year value before removing it so we can pass it to the API. */
+    {
+        char *yp = stem;
+        while (*yp) {
+            if (*yp == '(' && isdigit((unsigned char)yp[1]) &&
+                isdigit((unsigned char)yp[2]) && isdigit((unsigned char)yp[3]) &&
+                isdigit((unsigned char)yp[4]) && yp[5] == ')') {
+                if (*year < 0) {
+                    char yr_buf[5];
+                    snprintf(yr_buf, sizeof(yr_buf), "%.*s", 4, yp + 1);
+                    *year = atoi(yr_buf);
+                }
+                memmove(yp, yp + 6, strlen(yp + 6) + 1);
+                continue;
+            }
+            yp++;
+        }
+        normalize_separators(stem);
+    }
 
     /* If title empty and we have season info, climb directory tree for show name */
     if (stem[0] == '\0' && *season >= 0) {
@@ -805,8 +828,61 @@ static void subdl_collect_item(const char *item, size_t item_len, void *ud)
     (*ctx->count)++;
 }
 
-static int subdl_search(const char *title, int season, int episode,
+/* ── TMDB lookup ─────────────────────────────────────────────────────────── */
+
+/* Look up a TMDB movie ID by title + year.  Returns >0 on success, -1 on failure. */
+static int tmdb_movie_lookup(const char *title, int year, const char *tmdb_key)
+{
+    if (!tmdb_key || !tmdb_key[0]) return -1;
+
+    char t_enc[512], key_enc[256];
+    url_encode(title,    t_enc,    sizeof(t_enc));
+    url_encode(tmdb_key, key_enc,  sizeof(key_enc));
+
+    char url[1024];
+    if (year > 0)
+        snprintf(url, sizeof(url),
+            "https://api.themoviedb.org/3/search/movie?api_key=%s&query=%s&year=%d",
+            key_enc, t_enc, year);
+    else
+        snprintf(url, sizeof(url),
+            "https://api.themoviedb.org/3/search/movie?api_key=%s&query=%s",
+            key_enc, t_enc);
+
+    MemBuf mb = {0};
+    long   http_code = 0;
+    CURLcode rc = http_get(url, NULL, &http_code, &mb);
+    if (rc != CURLE_OK || http_code != 200) {
+        fprintf(stderr, "tmdb: curl=%d http=%ld\n", rc, http_code);
+        membuf_free(&mb);
+        return -1;
+    }
+
+    /* Pull first result id from "results":[{"id":N,...},...] */
+    int tmdb_id = -1;
+    /* Find "results":[ and then the first "id": inside it */
+    const char *rp = strstr(mb.data, "\"results\"");
+    if (rp) {
+        rp = strchr(rp, '[');
+        if (rp) {
+            const char *id_tok = strstr(rp, "\"id\"");
+            if (id_tok) {
+                id_tok += 4; /* skip "id" */
+                while (*id_tok == ':' || *id_tok == ' ') id_tok++;
+                if (isdigit((unsigned char)*id_tok))
+                    tmdb_id = atoi(id_tok);
+            }
+        }
+    }
+
+    membuf_free(&mb);
+    fprintf(stderr, "tmdb: id=%d for '%s' year=%d\n", tmdb_id, title, year);
+    return tmdb_id;
+}
+
+static int subdl_search(const char *title, int season, int episode, int year,
                          const char *lang, const char *api_key,
+                         const char *tmdb_key,
                          SubResult *results, int max_results)
 {
     if (!api_key || !api_key[0]) return 0;
@@ -827,10 +903,24 @@ static int subdl_search(const char *title, int season, int episode,
             "&languages=%s&season_number=%d&episode_number=%d&type=tv",
             key_enc, t_enc, lang_enc, season, episode);
     } else {
-        snprintf(url, sizeof(url),
-            "https://api.subdl.com/api/v1/subtitles?api_key=%s&film_name=%s"
-            "&languages=%s",
-            key_enc, t_enc, lang_enc);
+        /* For movies: try TMDB lookup to get a precise tmdb_id for SubDL */
+        int tmdb_id = tmdb_movie_lookup(title, year, tmdb_key);
+        if (tmdb_id > 0) {
+            snprintf(url, sizeof(url),
+                "https://api.subdl.com/api/v1/subtitles?api_key=%s&tmdb_id=%d"
+                "&languages=%s&type=movie",
+                key_enc, tmdb_id, lang_enc);
+        } else if (year > 0) {
+            snprintf(url, sizeof(url),
+                "https://api.subdl.com/api/v1/subtitles?api_key=%s&film_name=%s"
+                "&languages=%s&type=movie&year=%d",
+                key_enc, t_enc, lang_enc, year);
+        } else {
+            snprintf(url, sizeof(url),
+                "https://api.subdl.com/api/v1/subtitles?api_key=%s&film_name=%s"
+                "&languages=%s&type=movie",
+                key_enc, t_enc, lang_enc);
+        }
     }
 
     MemBuf mb = {0};
@@ -933,16 +1023,17 @@ static int result_cmp_dl(const void *a, const void *b)
     return ((const SubResult *)b)->downloads - ((const SubResult *)a)->downloads;
 }
 
-static void do_search(const char *video_path, const char *api_key, const char *lang)
+static void do_search(const char *video_path, const char *api_key, const char *lang,
+                      const char *tmdb_key)
 {
     unlink(RESULTS_FILE);
     unlink(DONE_FILE);
 
     char title[512];
-    int  season = -1, episode = -1;
-    parse_filename(video_path, title, sizeof(title), &season, &episode);
-    fprintf(stderr, "search: title='%s' s=%d e=%d lang=%s\n",
-            title, season, episode, lang);
+    int  season = -1, episode = -1, year = -1;
+    parse_filename(video_path, title, sizeof(title), &season, &episode, &year);
+    fprintf(stderr, "search: title='%s' s=%d e=%d year=%d lang=%s\n",
+            title, season, episode, year, lang);
 
     SubResult results[SUB_RESULT_MAX];
     memset(results, 0, sizeof(results));
@@ -950,8 +1041,8 @@ static void do_search(const char *video_path, const char *api_key, const char *l
 
     /* Primary: SubDL */
     if (api_key && api_key[0])
-        count = subdl_search(title, season, episode, lang, api_key,
-                              results, SUB_RESULT_MAX);
+        count = subdl_search(title, season, episode, year, lang, api_key,
+                              tmdb_key, results, SUB_RESULT_MAX);
 
     /* Fallback: Podnapisi */
     if (count == 0)
@@ -1010,8 +1101,9 @@ static void do_download(const char *provider, const char *download_key,
 
     /* Parse episode from srt_dest filename to select correct entry in archive */
     char   dummy[512];
-    int    ep_season = -1, ep_episode = -1;
-    parse_filename(srt_dest, dummy, sizeof(dummy), &ep_season, &ep_episode);
+    int    ep_season = -1, ep_episode = -1, ep_year = -1;
+    parse_filename(srt_dest, dummy, sizeof(dummy), &ep_season, &ep_episode, &ep_year);
+    (void)ep_year;
 
     if (!extract_best_srt(zip_path, srt_dest, ep_season, ep_episode)) {
         unlink(zip_path);
@@ -1038,11 +1130,12 @@ int main(int argc, char *argv[])
     if (strcmp(mode, "search") == 0) {
         if (argc < 5) {
             fprintf(stderr,
-                    "Usage: fetch_subs search <video_path> <subdl_key> <lang>\n");
+                    "Usage: fetch_subs search <video_path> <subdl_key> <lang> [tmdb_key]\n");
             curl_global_cleanup();
             return 1;
         }
-        do_search(argv[2], argv[3], argv[4]);
+        const char *tmdb_key = (argc >= 6) ? argv[5] : "";
+        do_search(argv[2], argv[3], argv[4], tmdb_key);
     } else if (strcmp(mode, "download") == 0) {
         if (argc < 5) {
             fprintf(stderr,

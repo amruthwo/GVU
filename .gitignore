@@ -14,7 +14,6 @@ gvu-universal-notes.md
 # Runtime / generated files
 gvu.conf
 gvu.conf.bak
-icon.png
 
 # TMDB API key — never commit, included in release packages via packaging scripts
 .tmdb_key

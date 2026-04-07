@@ -299,14 +299,22 @@ static SDL_Texture *build_backdrop(SDL_Renderer *renderer,
     SDL_FreeSurface(orig);
     if (!src) return NULL;
 
-    /* Scale directly into a quarter-size surface */
+    /* Scale to fill width, preserving aspect ratio, centre-crop vertically.
+       Portrait covers on a landscape screen: scaling to fill width makes the
+       image taller than the screen, which SDL clips — no squash distortion. */
     int bw = win_w / 4;
     int bh = win_h / 4;
     SDL_Surface *small = SDL_CreateRGBSurfaceWithFormat(0, bw, bh, 32,
                                                          SDL_PIXELFORMAT_ARGB8888);
     if (!small) { SDL_FreeSurface(src); return NULL; }
     SDL_SetSurfaceBlendMode(src, SDL_BLENDMODE_NONE);
-    SDL_BlitScaled(src, NULL, small, NULL);
+    {
+        int scaled_h = (src->w > 0)
+                       ? (int)((float)src->h * bw / src->w + 0.5f) : bh;
+        if (scaled_h < bh) scaled_h = bh;  /* never leave gaps at top/bottom */
+        SDL_Rect dst = { 0, (bh - scaled_h) / 2, bw, scaled_h };
+        SDL_BlitScaled(src, NULL, small, &dst);
+    }
     SDL_FreeSurface(src);
 
     /* Blur the small surface (radius 3 on 160×120 ≈ radius 12 on 640×480) */
