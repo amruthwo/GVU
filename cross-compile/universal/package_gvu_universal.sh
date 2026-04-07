@@ -14,6 +14,9 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 VERSION="${1:-dev}"
+# Strip a leading 'v' from the version so we don't double it when the
+# caller passes a git tag like "v0.2.2" (result: gvu_spruce_universal_v0.2.2.zip)
+VERSION="${VERSION#v}"
 OUT_ZIP="$REPO_ROOT/gvu_spruce_universal_v${VERSION}.zip"
 STAGE="$REPO_ROOT/build/universal-stage"
 APP="$STAGE/App/GVU"
