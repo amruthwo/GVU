@@ -167,8 +167,11 @@ jobs:
           TMDB_KEY: ${{ secrets.TMDB_KEY }}
           SUBDL_KEY: ${{ secrets.SUBDL_KEY }}
         run: |
-          [ -n "$TMDB_KEY" ] && printf '%s' "$TMDB_KEY" > .tmdb_key
-          [ -n "$SUBDL_KEY" ] && printf '%s' "$SUBDL_KEY" > .subdl_key
+          # Write API keys into resources/api/ so they get picked up by
+          # the cp -r resources/ step inside package_gvu_universal.sh
+          mkdir -p resources/api
+          [ -n "$TMDB_KEY"  ] && printf '%s' "$TMDB_KEY"  > resources/api/TMDB_API.txt
+          [ -n "$SUBDL_KEY" ] && printf '%s' "$SUBDL_KEY" > resources/api/SubDL_API.txt
           sh cross-compile/universal/package_gvu_universal.sh "${{ steps.release_info.outputs.version }}"
 
       - name: Upload to release
