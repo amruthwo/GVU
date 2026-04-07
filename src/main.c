@@ -176,6 +176,7 @@ static void sub_start_search(SubWorkflow *wf) {
         wf->video_path,
         (char *)config_subdl_key(),
         (char *)config_sub_lang(),
+        (char *)config_tmdb_key(),   /* optional: used for precise movie lookup */
         NULL
     };
     sub_spawn(wf, argv_buf);
@@ -425,10 +426,19 @@ int main(int argc, char *argv[]) {
         SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
 #endif
 
-    /* Scale font sizes with window width. Base sizes (18/14) are slightly
-       larger than the original 16/13 so 640×480 also benefits. */
-    int font_sz  = (int)(18.0f * win_w / 640.0f + 0.5f);
-    int font_ssz = (int)(14.0f * win_w / 640.0f + 0.5f);
+    /* Scale font sizes with the smaller of the two aspect-ratio-normalised
+       scale factors.  This prevents overly large text on 16:9 screens (e.g.
+       1280×720) where width-only scaling would give 2× text in a panel that is
+       only 1.5× taller — causing overlays to overflow the panel height.
+       4:3 and square devices (A30, Brick, Mini Flip) are unaffected since their
+       width and height scale factors are equal. */
+    float ui_scale = win_w / 640.0f;
+    {
+        float hs = win_h / 480.0f;
+        if (hs < ui_scale) ui_scale = hs;
+    }
+    int font_sz  = (int)(18.0f * ui_scale + 0.5f);
+    int font_ssz = (int)(14.0f * ui_scale + 0.5f);
     TTF_Font *font       = TTF_OpenFont("resources/fonts/DejaVuSans.ttf", font_sz);
     TTF_Font *font_small = TTF_OpenFont("resources/fonts/DejaVuSans.ttf", font_ssz);
 
@@ -820,6 +830,53 @@ int main(int argc, char *argv[]) {
                         }
                         posix_spawn_file_actions_destroy(&fa);
                         if (logfd >= 0) close(logfd);
+                    } else if (ck == SDLK_LSHIFT || ck == SDLK_x) {
+                        /* X — clear existing cover (folder + all season covers) */
+                        scrape_confirm = 0;
+                        if (scrape_folder_idx >= 0 &&
+                                scrape_folder_idx < lib.folder_count) {
+                            MediaFolder *cf = &lib.folders[scrape_folder_idx];
+                            char cp[1200];
+                            /* Top-level cover */
+                            snprintf(cp, sizeof(cp), "%s/cover.jpg", cf->path);
+                            unlink(cp);
+                            snprintf(cp, sizeof(cp), "%s/cover.png", cf->path);
+                            unlink(cp);
+                            free((char *)cf->cover);
+                            cf->cover = NULL;
+                            /* Season covers */
+                            for (int si = 0; si < cf->season_count; si++) {
+                                Season *s = &cf->seasons[si];
+                                snprintf(cp, sizeof(cp), "%s/cover.jpg", s->path);
+                                unlink(cp);
+                                snprintf(cp, sizeof(cp), "%s/cover.png", s->path);
+                                unlink(cp);
+                                free((char *)s->cover);
+                                s->cover = NULL;
+                            }
+                            /* Invalidate texture caches */
+                            if (scrape_folder_idx < cache.count &&
+                                    cache.textures[scrape_folder_idx]) {
+                                SDL_DestroyTexture(cache.textures[scrape_folder_idx]);
+                                cache.textures[scrape_folder_idx] = NULL;
+                            }
+                            if (cache.backdrop_idx == scrape_folder_idx) {
+                                if (cache.backdrop)
+                                    SDL_DestroyTexture(cache.backdrop);
+                                cache.backdrop     = NULL;
+                                cache.backdrop_idx = -1;
+                            }
+                            if (cache.season_tex_folder_idx == scrape_folder_idx) {
+                                for (int si = 0; si < cache.season_tex_count; si++)
+                                    if (cache.season_textures[si])
+                                        SDL_DestroyTexture(cache.season_textures[si]);
+                                free(cache.season_textures);
+                                cache.season_textures       = NULL;
+                                cache.season_tex_count      = 0;
+                                cache.season_tex_folder_idx = -1;
+                            }
+                        }
+                        scrape_folder_idx = -1;
                     } else if (ck == SDLK_LCTRL || ck == SDLK_BACKSPACE) {
                         scrape_confirm = 0;  /* B — cancel */
                     }
@@ -1601,7 +1658,7 @@ int main(int argc, char *argv[]) {
             /* Hint — use highlight_bg so it's readable against the panel background */
             SDL_Color hc = { t->highlight_bg.r, t->highlight_bg.g,
                              t->highlight_bg.b, 255 };
-            SDL_Surface *hs = TTF_RenderUTF8_Blended(font_small, "A: Fetch   B: Cancel", hc);
+            SDL_Surface *hs = TTF_RenderUTF8_Blended(font_small, "A: Fetch   X: Clear   B: Cancel", hc);
             if (hs) {
                 SDL_Texture *ht = SDL_CreateTextureFromSurface(renderer, hs);
                 if (ht) {
