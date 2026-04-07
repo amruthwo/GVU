@@ -8,17 +8,18 @@ FROM debian:bullseye
 # No VERNEED patching needed (device glibc 2.33 is modern).
 # -------------------------------------------------------------------------
 
-RUN apt-get update && apt-get install -y \
+RUN dpkg --add-architecture arm64 && \
+    apt-get update && apt-get install -y \
         make cmake wget ca-certificates xz-utils python3 zip \
         gcc-aarch64-linux-gnu \
         g++-aarch64-linux-gnu \
         pkg-config \
-        zlib1g-dev \
-        libasound2-dev \
+        zlib1g-dev:arm64 \
+        libasound2-dev:arm64 \
     && rm -rf /var/lib/apt/lists/*
 
 ENV CROSS=aarch64-linux-gnu
-ENV CFLAGS_ARCH="-march=armv8-a -O2"
+ENV CFLAGS_ARCH="-march=armv8-a -O3 -ffunction-sections -fdata-sections -flto=auto -Wl,--gc-sections,--strip-all"
 ENV PREFIX=/opt/brick
 ENV PKG_CONFIG_PATH=/opt/brick/lib/pkgconfig
 ENV PKG_CONFIG_LIBDIR=/opt/brick/lib/pkgconfig
@@ -123,7 +124,7 @@ RUN wget -q https://ffmpeg.org/releases/ffmpeg-5.1.6.tar.gz && \
         --arch=aarch64 --target-os=linux \
         --cross-prefix=$CROSS- \
         --enable-cross-compile \
-        --cpu=cortex-a55 \
+        --cpu=cortex-a53 \
         --enable-runtime-cpudetect \
         --prefix=$PREFIX \
         --enable-static --disable-shared \
@@ -208,7 +209,8 @@ RUN tar xf /tmp/curl-8.7.1.tar.gz && \
         CC=${CROSS}-gcc \
         CFLAGS="${CFLAGS_ARCH}" \
         CPPFLAGS="-I${PREFIX}/include" \
-        LDFLAGS="-L${PREFIX}/lib" \
+        LDFLAGS="$CFLAGS_ARCH -L${PREFIX}/lib" \
+        LIBS="-ldl -lpthread" \
     && make -j$(nproc) install && cd / && rm -rf curl-8.7.1* /tmp/curl-8.7.1.tar.gz
 
 WORKDIR /gvu

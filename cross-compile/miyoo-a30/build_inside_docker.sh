@@ -13,12 +13,14 @@ make -C /gvu miyoo-a30-build
 cp /gvu/gvu32 "$BUILD/gvu32"
 
 echo "=== Compiling fetch_subs32 ==="
-arm-linux-gnueabihf-gcc -Wall -std=c11 -O2 -D_POSIX_C_SOURCE=200809L -DGVU_A30 \
-    -march=armv7-a -mfpu=neon-vfpv3 -mfloat-abi=hard \
+arm-linux-gnueabihf-gcc -Wall -std=c11 -O3 -D_POSIX_C_SOURCE=200809L -DGVU_A30 \
+    -mcpu=cortex-a7 -mfpu=neon-vfpv4 -mfloat-abi=hard \
+    -ffunction-sections -fdata-sections \
     $(pkg-config --cflags libcurl) \
     -o "$BUILD/fetch_subs32" /gvu/src/fetch_subs.c /gvu/src/glibc_compat.c \
     $(pkg-config --static --libs libcurl) \
-    -lz -lm -static-libgcc
+    -lz -lm -static-libgcc -flto=auto \
+    -Wl,--gc-sections,--strip-all
 echo "Built: fetch_subs32"
 
 echo "=== Patching GLIBC version symbols ==="

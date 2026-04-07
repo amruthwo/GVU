@@ -1,5 +1,5 @@
 CC      = gcc
-CFLAGS  = -Wall -Wextra -std=c11 -g -D_POSIX_C_SOURCE=200809L \
+CFLAGS  = -Wall -Wextra -std=c11 -D_POSIX_C_SOURCE=200809L \
           $(shell pkg-config --cflags sdl2 SDL2_image SDL2_ttf) \
           $(shell pkg-config --cflags libavformat libavcodec libavutil libswresample libswscale)
 LDFLAGS = $(shell pkg-config --libs sdl2 SDL2_image SDL2_ttf) \
@@ -30,9 +30,11 @@ TARGET  = gvu
 # pkg-config env vars are set by the Dockerfile (PKG_CONFIG_PATH etc.).
 # -------------------------------------------------------------------------
 A30_CC      = arm-linux-gnueabihf-gcc
-A30_CFLAGS  = -Wall -Wextra -std=c11 -O2 -D_POSIX_C_SOURCE=200809L \
+A30_CFLAGS  = -Wall -Wextra -std=c11 -O3 -D_POSIX_C_SOURCE=200809L \
               -DGVU_A30 \
-              -march=armv7-a -mfpu=neon-vfpv3 -mfloat-abi=hard \
+              -mcpu=cortex-a7 -mfpu=neon-vfpv4 -mfloat-abi=hard \
+              -ffunction-sections -fdata-sections \
+              -flto=auto \
               $(shell pkg-config --cflags sdl2 SDL2_image SDL2_ttf \
                   libavformat libavcodec libavutil libswresample libswscale)
 # SDL2 is linked DYNAMICALLY — libSDL2-2.0.so.0 ships in lib32/.
@@ -44,7 +46,10 @@ A30_LDFLAGS = -Wl,--start-group \
               $(shell pkg-config --static --libs sdl2 SDL2_image SDL2_ttf \
                   libavformat libavcodec libavutil libswresample libswscale) \
               -Wl,--end-group \
-              -lm -lpthread -ldl -static-libgcc -static-libstdc++
+              -Wl,--gc-sections \
+              -Wl,--strip-all \
+              -lm -lpthread -ldl -static-libgcc -static-libstdc++ \
+              -flto=auto
 
 A30_SRCS    = $(SRCS) $(SRC_DIR)/a30_screen.c $(SRC_DIR)/glibc_compat.c
 A30_TARGET  = gvu32
@@ -59,9 +64,11 @@ GVU_A30_PATH   ?= /mnt/SDCARD/App/GVU
 # cross-compile/trimui-brick/Dockerfile.gvu.
 # -------------------------------------------------------------------------
 BRICK_CC      = aarch64-linux-gnu-gcc
-BRICK_CFLAGS  = -Wall -Wextra -std=c11 -O2 -D_POSIX_C_SOURCE=200809L \
+BRICK_CFLAGS  = -Wall -Wextra -std=c11 -O3 -D_POSIX_C_SOURCE=200809L \
                 -DGVU_TRIMUI_BRICK \
                 -march=armv8-a \
+                -ffunction-sections -fdata-sections \
+                -flto=auto \
                 $(shell pkg-config --cflags sdl2 SDL2_image SDL2_ttf \
                     libavformat libavcodec libavutil libswresample libswscale)
 # Static linking — gvu64 NEEDED: only libc, libm, libpthread, libdl, libasound.so.2
@@ -69,7 +76,10 @@ BRICK_LDFLAGS = -Wl,--start-group \
                 $(shell pkg-config --static --libs sdl2 SDL2_image SDL2_ttf \
                     libavformat libavcodec libavutil libswresample libswscale) \
                 -Wl,--end-group \
-                -lm -lpthread -ldl -static-libgcc -static-libstdc++
+                -Wl,--gc-sections \
+                -Wl,--strip-all \
+                -lm -lpthread -ldl -static-libgcc -static-libstdc++ \
+                -flto=auto
 
 BRICK_SRCS    = $(SRCS) $(SRC_DIR)/brick_screen.c
 BRICK_TARGET  = gvu64
@@ -169,22 +179,25 @@ trimui-brick-deploy: build/gvu64
 
 # Cross-compile fetch_subs32 (armhf) — must run inside miyoo-a30 Docker image
 fetch-subs-a30-build: src/fetch_subs.c
-	$(A30_CC) -Wall -std=c11 -O2 -D_POSIX_C_SOURCE=200809L \
-	    -march=armv7-a -mfpu=neon-vfpv3 -mfloat-abi=hard \
+	$(A30_CC) -Wall -std=c11 -O3 -D_POSIX_C_SOURCE=200809L \
+	    -mcpu=cortex-a7 -mfpu=neon-vfpv4 -mfloat-abi=hard \
+		-ffunction-sections -fdata-sections \
 	    $$(pkg-config --cflags libcurl) \
 	    -o build/fetch_subs32 $< \
 	    $$(pkg-config --static --libs libcurl) \
-	    -lz -lm -static-libgcc
+	    -lz -lm -static-libgcc -flto=auto \
+		-Wl,--gc-sections,--strip-all
 	@echo "Built: build/fetch_subs32"
 
 # Cross-compile fetch_subs64 (aarch64) — must run inside trimui-brick Docker image
 fetch-subs-brick-build: src/fetch_subs.c
-	$(BRICK_CC) -Wall -std=c11 -O2 -D_POSIX_C_SOURCE=200809L \
+	$(BRICK_CC) -Wall -std=c11 -O3 -D_POSIX_C_SOURCE=200809L \
 	    -march=armv8-a \
 	    $$(pkg-config --cflags libcurl) \
 	    -o build/fetch_subs64 $< \
 	    $$(pkg-config --static --libs libcurl) \
-	    -lz -lm -static-libgcc
+	    -lz -lm -static-libgcc -flto=auto \
+		-Wl,--gc-sections,--strip-all
 	@echo "Built: build/fetch_subs64"
 
 clean:

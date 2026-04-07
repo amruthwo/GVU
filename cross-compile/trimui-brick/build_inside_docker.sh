@@ -13,12 +13,14 @@ make -C /gvu trimui-brick-build
 cp /gvu/gvu64 "$BUILD/gvu64"
 
 echo "=== Compiling fetch_subs64 ==="
-aarch64-linux-gnu-gcc -Wall -std=c11 -O2 -D_POSIX_C_SOURCE=200809L \
+aarch64-linux-gnu-gcc -Wall -std=c11 -O3 -D_POSIX_C_SOURCE=200809L \
     -march=armv8-a \
+    -ffunction-sections -fdata-sections \
     $(pkg-config --cflags libcurl) \
     -o "$BUILD/fetch_subs64" /gvu/src/fetch_subs.c \
     $(pkg-config --static --libs libcurl) \
-    -lz -lm -static-libgcc
+    -lz -lm -static-libgcc -flto=auto \
+    -Wl,--gc-sections,--strip-all
 echo "Built: fetch_subs64"
 
 echo "=== Collecting shared library dependencies ==="
